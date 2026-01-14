@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { ImageItem, PackedItem, MaxRectsPacker, PackerOptions, nextPowerOfTwo, generateExportData, ExportFormat, PackingAlgorithm } from '@/lib/packer';
 import { getTranslations, Locale } from '@/lib/i18n';
 
@@ -12,7 +12,6 @@ export default function TexturePacker({ locale }: Props) {
   const t = getTranslations(locale);
   
   const [images, setImages] = useState<ImageItem[]>([]);
-  const [packedResult, setPackedResult] = useState<{ packed: PackedItem[]; width: number; height: number } | null>(null);
   const [settings, setSettings] = useState<PackerOptions>({
     maxWidth: 2048,
     maxHeight: 2048,
@@ -33,6 +32,34 @@ export default function TexturePacker({ locale }: Props) {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Auto-pack when images or settings change
+  const packedResult = useMemo(() => {
+    if (images.length === 0) return null;
+
+    const packer = new MaxRectsPacker(settings);
+    const packed = packer.pack(images);
+    const bounds = packer.getUsedBounds();
+    
+    let finalWidth = bounds.width;
+    let finalHeight = bounds.height;
+
+    if (settings.powerOfTwo) {
+      finalWidth = nextPowerOfTwo(finalWidth);
+      finalHeight = nextPowerOfTwo(finalHeight);
+    }
+
+    // Ensure minimum size
+    finalWidth = Math.max(finalWidth, 1);
+    finalHeight = Math.max(finalHeight, 1);
+
+    return {
+      packed: packed.filter((p) => p.placed),
+      failed: packed.filter((p) => !p.placed),
+      width: finalWidth,
+      height: finalHeight,
+    };
+  }, [images, settings]);
 
   const loadImage = useCallback((file: File): Promise<ImageItem> => {
     return new Promise((resolve, reject) => {
@@ -94,40 +121,9 @@ export default function TexturePacker({ locale }: Props) {
 
   const clearAll = useCallback(() => {
     setImages([]);
-    setPackedResult(null);
   }, []);
 
-  const pack = useCallback(() => {
-    if (images.length === 0) {
-      alert(t.errors.noImages);
-      return;
-    }
-
-    const packer = new MaxRectsPacker(settings);
-    const packed = packer.pack(images);
-
-    const failed = packed.filter((p) => !p.placed);
-    if (failed.length > 0) {
-      alert(`${t.errors.packFailed} (${failed.length})`);
-    }
-
-    const bounds = packer.getUsedBounds();
-    let finalWidth = bounds.width;
-    let finalHeight = bounds.height;
-
-    if (settings.powerOfTwo) {
-      finalWidth = nextPowerOfTwo(finalWidth);
-      finalHeight = nextPowerOfTwo(finalHeight);
-    }
-
-    setPackedResult({
-      packed: packed.filter((p) => p.placed),
-      width: finalWidth,
-      height: finalHeight,
-    });
-  }, [images, settings, t.errors]);
-
-  // Render canvas
+  // Render canvas when packed result changes
   useEffect(() => {
     if (!packedResult || !canvasRef.current) return;
 
@@ -158,7 +154,7 @@ export default function TexturePacker({ locale }: Props) {
       ctx.restore();
 
       if (showBorders) {
-        ctx.strokeStyle = '#ff000066';
+        ctx.strokeStyle = 'rgba(99, 102, 241, 0.6)';
         ctx.lineWidth = 1;
         const w = item.rotated ? item.height : item.width;
         const h = item.rotated ? item.width : item.height;
@@ -199,15 +195,20 @@ export default function TexturePacker({ locale }: Props) {
     : 0;
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      {/* Left Panel */}
-      <div className="space-y-6">
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      {/* Left Panel - Controls */}
+      <div className="lg:col-span-4 xl:col-span-3 space-y-5">
         {/* Upload */}
-        <div className="bg-white rounded-xl shadow-sm p-6">
-          <h2 className="text-lg font-semibold mb-4">{t.upload.title}</h2>
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+          <h2 className="text-base font-semibold text-gray-800 mb-4 flex items-center gap-2">
+            <span className="w-8 h-8 bg-indigo-100 rounded-lg flex items-center justify-center text-indigo-600">📁</span>
+            {t.upload.title}
+          </h2>
           <div
-            className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer ${
-              isDragging ? 'border-indigo-500 bg-indigo-50' : 'border-gray-300 hover:border-indigo-400'
+            className={`relative border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer ${
+              isDragging 
+                ? 'border-indigo-500 bg-indigo-50 scale-[1.02]' 
+                : 'border-gray-200 hover:border-indigo-300 hover:bg-gray-50'
             }`}
             onDrop={handleDrop}
             onDragOver={handleDragOver}
@@ -222,77 +223,78 @@ export default function TexturePacker({ locale }: Props) {
               className="hidden"
               onChange={(e) => e.target.files && handleFiles(e.target.files)}
             />
-            <div className="text-4xl mb-2">📁</div>
-            <button className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition">
-              {t.upload.button}
-            </button>
-            <p className="text-gray-500 text-sm mt-2">{t.upload.dragHint}</p>
-            <p className="text-gray-400 text-xs mt-1">{t.upload.formats}</p>
+            <div className="text-3xl mb-3">🖼️</div>
+            <p className="text-sm font-medium text-gray-700 mb-1">{t.upload.button}</p>
+            <p className="text-xs text-gray-400">{t.upload.dragHint}</p>
           </div>
+          <p className="text-xs text-gray-400 text-center mt-3">{t.upload.formats}</p>
         </div>
 
         {/* Settings */}
-        <div className="bg-white rounded-xl shadow-sm p-6">
-          <h2 className="text-lg font-semibold mb-4">{t.settings.title}</h2>
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+          <h2 className="text-base font-semibold text-gray-800 mb-4 flex items-center gap-2">
+            <span className="w-8 h-8 bg-purple-100 rounded-lg flex items-center justify-center text-purple-600">⚙️</span>
+            {t.settings.title}
+          </h2>
           <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-sm text-gray-600 mb-1">{t.settings.maxWidth}</label>
+                <label className="block text-xs font-medium text-gray-500 mb-1.5">{t.settings.maxWidth}</label>
                 <select
                   value={settings.maxWidth}
                   onChange={(e) => setSettings({ ...settings, maxWidth: Number(e.target.value) })}
-                  className="w-full border rounded-lg px-3 py-2"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition"
                 >
                   {[512, 1024, 2048, 4096, 8192].map((v) => (
-                    <option key={v} value={v}>{v}</option>
+                    <option key={v} value={v}>{v}px</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="block text-sm text-gray-600 mb-1">{t.settings.maxHeight}</label>
+                <label className="block text-xs font-medium text-gray-500 mb-1.5">{t.settings.maxHeight}</label>
                 <select
                   value={settings.maxHeight}
                   onChange={(e) => setSettings({ ...settings, maxHeight: Number(e.target.value) })}
-                  className="w-full border rounded-lg px-3 py-2"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition"
                 >
                   {[512, 1024, 2048, 4096, 8192].map((v) => (
-                    <option key={v} value={v}>{v}</option>
+                    <option key={v} value={v}>{v}px</option>
                   ))}
                 </select>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-sm text-gray-600 mb-1">{t.settings.padding}</label>
+                <label className="block text-xs font-medium text-gray-500 mb-1.5">{t.settings.padding}</label>
                 <input
                   type="number"
                   value={settings.padding}
                   onChange={(e) => setSettings({ ...settings, padding: Number(e.target.value) })}
                   min={0}
                   max={16}
-                  className="w-full border rounded-lg px-3 py-2"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition"
                 />
               </div>
               <div>
-                <label className="block text-sm text-gray-600 mb-1">{t.settings.extrude}</label>
+                <label className="block text-xs font-medium text-gray-500 mb-1.5">{t.settings.extrude}</label>
                 <input
                   type="number"
                   value={settings.extrude}
                   onChange={(e) => setSettings({ ...settings, extrude: Number(e.target.value) })}
                   min={0}
                   max={8}
-                  className="w-full border rounded-lg px-3 py-2"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t.settings.algorithm}</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1.5">{t.settings.algorithm}</label>
               <select
                 value={settings.algorithm}
                 onChange={(e) => setSettings({ ...settings, algorithm: e.target.value as PackingAlgorithm })}
-                className="w-full border rounded-lg px-3 py-2"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition"
               >
                 {(['maxrects-bssf', 'maxrects-blsf', 'maxrects-baf', 'shelf'] as const).map((alg) => (
                   <option key={alg} value={alg}>{t.algorithms[alg]}</option>
@@ -301,104 +303,130 @@ export default function TexturePacker({ locale }: Props) {
             </div>
 
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t.settings.backgroundColor}</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1.5">{t.settings.backgroundColor}</label>
               <div className="flex gap-2">
                 <button
                   onClick={() => setBgColor('transparent')}
-                  className={`flex-1 py-2 rounded-lg border ${bgColor === 'transparent' ? 'border-indigo-500 bg-indigo-50' : ''}`}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium transition ${
+                    bgColor === 'transparent' 
+                      ? 'bg-indigo-100 text-indigo-700 border-2 border-indigo-300' 
+                      : 'bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100'
+                  }`}
                 >
                   {t.settings.transparent}
                 </button>
-                <input
-                  type="color"
-                  value={bgColor === 'transparent' ? '#ffffff' : bgColor}
-                  onChange={(e) => setBgColor(e.target.value)}
-                  className="w-12 h-10 rounded-lg cursor-pointer"
-                />
+                <div className="relative">
+                  <input
+                    type="color"
+                    value={bgColor === 'transparent' ? '#ffffff' : bgColor}
+                    onChange={(e) => setBgColor(e.target.value)}
+                    className="w-12 h-10 rounded-lg cursor-pointer border border-gray-200"
+                  />
+                </div>
               </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={settings.allowRotation}
-                  onChange={(e) => setSettings({ ...settings, allowRotation: e.target.checked })}
-                  className="w-4 h-4 text-indigo-600"
-                />
-                <span className="text-sm">{t.settings.allowRotation}</span>
+            <div className="flex flex-col gap-2 pt-2">
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    checked={settings.allowRotation}
+                    onChange={(e) => setSettings({ ...settings, allowRotation: e.target.checked })}
+                    className="sr-only peer"
+                  />
+                  <div className="w-9 h-5 bg-gray-200 rounded-full peer-checked:bg-indigo-500 transition"></div>
+                  <div className="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow peer-checked:translate-x-4 transition"></div>
+                </div>
+                <span className="text-sm text-gray-600 group-hover:text-gray-800">{t.settings.allowRotation}</span>
               </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={settings.powerOfTwo}
-                  onChange={(e) => setSettings({ ...settings, powerOfTwo: e.target.checked })}
-                  className="w-4 h-4 text-indigo-600"
-                />
-                <span className="text-sm">{t.settings.powerOfTwo}</span>
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    checked={settings.powerOfTwo}
+                    onChange={(e) => setSettings({ ...settings, powerOfTwo: e.target.checked })}
+                    className="sr-only peer"
+                  />
+                  <div className="w-9 h-5 bg-gray-200 rounded-full peer-checked:bg-indigo-500 transition"></div>
+                  <div className="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow peer-checked:translate-x-4 transition"></div>
+                </div>
+                <span className="text-sm text-gray-600 group-hover:text-gray-800">{t.settings.powerOfTwo}</span>
               </label>
             </div>
           </div>
         </div>
 
         {/* Image List */}
-        <div className="bg-white rounded-xl shadow-sm p-6">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
           <div className="flex justify-between items-center mb-4">
-            <h2 className="text-lg font-semibold">{t.imageList.title} ({images.length})</h2>
+            <h2 className="text-base font-semibold text-gray-800 flex items-center gap-2">
+              <span className="w-8 h-8 bg-green-100 rounded-lg flex items-center justify-center text-green-600">🗂️</span>
+              {t.imageList.title}
+              <span className="ml-1 px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded-full">{images.length}</span>
+            </h2>
             {images.length > 0 && (
-              <button onClick={clearAll} className="text-sm text-red-500 hover:text-red-700">
+              <button 
+                onClick={clearAll} 
+                className="text-xs text-red-500 hover:text-red-700 hover:bg-red-50 px-2 py-1 rounded-lg transition"
+              >
                 {t.imageList.removeAll}
               </button>
             )}
           </div>
-          <div className="max-h-64 overflow-y-auto space-y-2">
+          <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
             {images.length === 0 ? (
-              <p className="text-gray-400 text-center py-4">{t.imageList.empty}</p>
+              <div className="text-center py-8">
+                <div className="text-4xl mb-2 opacity-30">📭</div>
+                <p className="text-gray-400 text-sm">{t.imageList.empty}</p>
+              </div>
             ) : (
               images.map((img) => (
-                <div key={img.id} className="flex items-center gap-3 p-2 bg-gray-50 rounded-lg">
-                  <img src={img.url} alt={img.name} className="w-10 h-10 object-contain border rounded" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{img.name}</p>
-                    <p className="text-xs text-gray-500">{img.width} × {img.height}</p>
+                <div 
+                  key={img.id} 
+                  className="flex items-center gap-3 p-2.5 bg-gray-50 rounded-xl hover:bg-gray-100 transition group"
+                >
+                  <div className="w-11 h-11 rounded-lg bg-white border border-gray-200 flex items-center justify-center overflow-hidden">
+                    <img src={img.url} alt={img.name} className="max-w-full max-h-full object-contain" />
                   </div>
-                  <button onClick={() => removeImage(img.id)} className="text-red-500 hover:text-red-700 px-2">×</button>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-700 truncate">{img.name}</p>
+                    <p className="text-xs text-gray-400">{img.width} × {img.height}</p>
+                  </div>
+                  <button 
+                    onClick={() => removeImage(img.id)} 
+                    className="w-7 h-7 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
+                  >
+                    ×
+                  </button>
                 </div>
               ))
             )}
           </div>
         </div>
-
-        {/* Actions */}
-        <div className="flex gap-3">
-          <button
-            onClick={pack}
-            disabled={images.length === 0}
-            className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-semibold hover:bg-indigo-700 transition disabled:bg-gray-300 disabled:cursor-not-allowed"
-          >
-            {t.actions.generate}
-          </button>
-        </div>
       </div>
 
       {/* Right Panel - Preview & Export */}
-      <div className="lg:col-span-2 space-y-6">
+      <div className="lg:col-span-8 xl:col-span-9 space-y-5">
         {/* Preview */}
-        <div className="bg-white rounded-xl shadow-sm p-6">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="text-lg font-semibold">{t.preview.title}</h2>
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+          <div className="flex flex-wrap justify-between items-center gap-4 mb-4">
+            <h2 className="text-base font-semibold text-gray-800 flex items-center gap-2">
+              <span className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center text-blue-600">👁️</span>
+              {t.preview.title}
+            </h2>
             <div className="flex items-center gap-4">
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={showBorders}
                   onChange={(e) => setShowBorders(e.target.checked)}
-                  className="w-4 h-4"
+                  className="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                 />
                 {t.preview.showBorders}
               </label>
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-600">{t.preview.zoom}:</span>
+              <div className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-1.5">
+                <span className="text-xs text-gray-500">{t.preview.zoom}</span>
                 <input
                   type="range"
                   min={0.1}
@@ -406,61 +434,73 @@ export default function TexturePacker({ locale }: Props) {
                   step={0.1}
                   value={zoom}
                   onChange={(e) => setZoom(Number(e.target.value))}
-                  className="w-24"
+                  className="w-20 accent-indigo-500"
                 />
-                <span className="text-sm w-12">{Math.round(zoom * 100)}%</span>
+                <span className="text-xs font-medium text-gray-700 w-10">{Math.round(zoom * 100)}%</span>
               </div>
             </div>
           </div>
-          <div className="bg-gray-100 rounded-lg p-4 min-h-[400px] overflow-auto flex items-center justify-center"
-               style={{ backgroundImage: 'linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%)', backgroundSize: '20px 20px', backgroundPosition: '0 0, 0 10px, 10px -10px, -10px 0px' }}>
+          <div 
+            className="rounded-xl min-h-[420px] overflow-auto flex items-center justify-center p-4"
+            style={{ 
+              backgroundImage: 'linear-gradient(45deg, #e5e7eb 25%, transparent 25%), linear-gradient(-45deg, #e5e7eb 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e5e7eb 75%), linear-gradient(-45deg, transparent 75%, #e5e7eb 75%)', 
+              backgroundSize: '16px 16px', 
+              backgroundPosition: '0 0, 0 8px, 8px -8px, -8px 0px',
+              backgroundColor: '#f3f4f6'
+            }}
+          >
             {packedResult ? (
-              <canvas
-                ref={canvasRef}
-                style={{ transform: `scale(${zoom})`, transformOrigin: 'center', maxWidth: '100%' }}
-                className="shadow-lg"
-              />
+              <div className="relative">
+                <canvas
+                  ref={canvasRef}
+                  style={{ transform: `scale(${zoom})`, transformOrigin: 'center' }}
+                  className="shadow-xl rounded-lg"
+                />
+              </div>
             ) : (
-              <p className="text-gray-400">{t.preview.empty}</p>
+              <div className="text-center py-12">
+                <div className="text-5xl mb-3 opacity-30">🎨</div>
+                <p className="text-gray-400">{t.preview.empty}</p>
+              </div>
             )}
           </div>
         </div>
 
         {/* Stats */}
         {packedResult && (
-          <div className="bg-white rounded-xl shadow-sm p-6">
-            <h2 className="text-lg font-semibold mb-4">{t.stats.title}</h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="bg-indigo-50 rounded-lg p-4 text-center">
-                <p className="text-2xl font-bold text-indigo-600">{packedResult.width} × {packedResult.height}</p>
-                <p className="text-sm text-gray-600">{t.stats.size}</p>
-              </div>
-              <div className="bg-green-50 rounded-lg p-4 text-center">
-                <p className="text-2xl font-bold text-green-600">{packedResult.packed.length}</p>
-                <p className="text-sm text-gray-600">{t.stats.images}</p>
-              </div>
-              <div className="bg-yellow-50 rounded-lg p-4 text-center">
-                <p className="text-2xl font-bold text-yellow-600">{efficiency}%</p>
-                <p className="text-sm text-gray-600">{t.stats.efficiency}</p>
-              </div>
-              <div className="bg-red-50 rounded-lg p-4 text-center">
-                <p className="text-2xl font-bold text-red-600">{images.length - packedResult.packed.length}</p>
-                <p className="text-sm text-gray-600">{t.stats.failed}</p>
-              </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="bg-gradient-to-br from-indigo-500 to-indigo-600 rounded-2xl p-5 text-white">
+              <p className="text-indigo-200 text-xs font-medium mb-1">{t.stats.size}</p>
+              <p className="text-2xl font-bold">{packedResult.width} × {packedResult.height}</p>
+            </div>
+            <div className="bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-2xl p-5 text-white">
+              <p className="text-emerald-200 text-xs font-medium mb-1">{t.stats.images}</p>
+              <p className="text-2xl font-bold">{packedResult.packed.length}</p>
+            </div>
+            <div className="bg-gradient-to-br from-amber-500 to-amber-600 rounded-2xl p-5 text-white">
+              <p className="text-amber-200 text-xs font-medium mb-1">{t.stats.efficiency}</p>
+              <p className="text-2xl font-bold">{efficiency}%</p>
+            </div>
+            <div className="bg-gradient-to-br from-rose-500 to-rose-600 rounded-2xl p-5 text-white">
+              <p className="text-rose-200 text-xs font-medium mb-1">{t.stats.failed}</p>
+              <p className="text-2xl font-bold">{packedResult.failed.length}</p>
             </div>
           </div>
         )}
 
         {/* Export */}
-        <div className="bg-white rounded-xl shadow-sm p-6">
-          <h2 className="text-lg font-semibold mb-4">{t.export.title}</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+          <h2 className="text-base font-semibold text-gray-800 mb-4 flex items-center gap-2">
+            <span className="w-8 h-8 bg-orange-100 rounded-lg flex items-center justify-center text-orange-600">💾</span>
+            {t.export.title}
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t.export.format}</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1.5">{t.export.format}</label>
               <select
                 value={exportFormat}
                 onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
-                className="w-full border rounded-lg px-3 py-2"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-gray-50 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition"
               >
                 {(['json', 'json-array', 'css', 'xml', 'cocos2d', 'phaser3', 'unity'] as const).map((fmt) => (
                   <option key={fmt} value={fmt}>{t.formats[fmt]}</option>
@@ -468,12 +508,12 @@ export default function TexturePacker({ locale }: Props) {
               </select>
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">{t.export.imageName}</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1.5">{t.export.imageName}</label>
               <input
                 type="text"
                 value={imageName}
                 onChange={(e) => setImageName(e.target.value)}
-                className="w-full border rounded-lg px-3 py-2"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-gray-50 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition"
               />
             </div>
           </div>
@@ -481,23 +521,23 @@ export default function TexturePacker({ locale }: Props) {
             <button
               onClick={downloadImage}
               disabled={!packedResult}
-              className="flex-1 bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700 transition disabled:bg-gray-300 disabled:cursor-not-allowed"
+              className="flex-1 bg-gradient-to-r from-indigo-500 to-indigo-600 text-white py-3 rounded-xl font-medium hover:from-indigo-600 hover:to-indigo-700 transition shadow-sm shadow-indigo-200 disabled:from-gray-300 disabled:to-gray-300 disabled:shadow-none disabled:cursor-not-allowed"
             >
               {t.export.downloadImage}
             </button>
             <button
               onClick={downloadData}
               disabled={!packedResult}
-              className="flex-1 bg-green-600 text-white py-2 rounded-lg hover:bg-green-700 transition disabled:bg-gray-300 disabled:cursor-not-allowed"
+              className="flex-1 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white py-3 rounded-xl font-medium hover:from-emerald-600 hover:to-emerald-700 transition shadow-sm shadow-emerald-200 disabled:from-gray-300 disabled:to-gray-300 disabled:shadow-none disabled:cursor-not-allowed"
             >
               {t.export.downloadData}
             </button>
             <button
               onClick={copyData}
               disabled={!packedResult}
-              className="flex-1 bg-gray-600 text-white py-2 rounded-lg hover:bg-gray-700 transition disabled:bg-gray-300 disabled:cursor-not-allowed"
+              className="flex-1 bg-gradient-to-r from-gray-600 to-gray-700 text-white py-3 rounded-xl font-medium hover:from-gray-700 hover:to-gray-800 transition shadow-sm shadow-gray-200 disabled:from-gray-300 disabled:to-gray-300 disabled:shadow-none disabled:cursor-not-allowed"
             >
-              {copied ? t.export.copied : t.export.copyData}
+              {copied ? '✓ ' + t.export.copied : t.export.copyData}
             </button>
           </div>
         </div>
