@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { ImageItem, PackedItem, MaxRectsPacker, PackerOptions, nextPowerOfTwo, generateExportData, ExportFormat, PackingAlgorithm } from '@/lib/packer';
+import { ImageItem, MaxRectsPacker, PackerOptions, nextPowerOfTwo, generateExportData, ExportFormat, PackingAlgorithm } from '@/lib/packer';
 import { getTranslations, Locale } from '@/lib/i18n';
 
 interface Props {
@@ -123,6 +123,12 @@ export default function TexturePacker({ locale }: Props) {
     setImages([]);
   }, []);
 
+  // Check if output size exceeds max dimensions
+  const exceedsMaxSize = useMemo(() => {
+    if (!packedResult) return false;
+    return packedResult.width > settings.maxWidth || packedResult.height > settings.maxHeight;
+  }, [packedResult, settings]);
+
   // Render canvas when packed result changes
   useEffect(() => {
     if (!packedResult || !canvasRef.current) return;
@@ -161,7 +167,16 @@ export default function TexturePacker({ locale }: Props) {
         ctx.strokeRect(item.x, item.y, w, h);
       }
     });
-  }, [packedResult, showBorders, bgColor]);
+
+    // Draw red border if exceeds max size
+    if (exceedsMaxSize) {
+      ctx.strokeStyle = '#ef4444';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([8, 4]);
+      ctx.strokeRect(0, 0, settings.maxWidth, settings.maxHeight);
+      ctx.setLineDash([]);
+    }
+  }, [packedResult, showBorders, bgColor, exceedsMaxSize, settings]);
 
   const downloadImage = useCallback(() => {
     if (!canvasRef.current) return;
@@ -440,22 +455,46 @@ export default function TexturePacker({ locale }: Props) {
               </div>
             </div>
           </div>
-          <div 
+          <div
             className="rounded-xl min-h-[420px] overflow-auto flex items-center justify-center p-4"
-            style={{ 
-              backgroundImage: 'linear-gradient(45deg, #e5e7eb 25%, transparent 25%), linear-gradient(-45deg, #e5e7eb 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e5e7eb 75%), linear-gradient(-45deg, transparent 75%, #e5e7eb 75%)', 
-              backgroundSize: '16px 16px', 
+            style={{
+              backgroundImage: 'linear-gradient(45deg, #e5e7eb 25%, transparent 25%), linear-gradient(-45deg, #e5e7eb 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e5e7eb 75%), linear-gradient(-45deg, transparent 75%, #e5e7eb 75%)',
+              backgroundSize: '16px 16px',
               backgroundPosition: '0 0, 0 8px, 8px -8px, -8px 0px',
               backgroundColor: '#f3f4f6'
             }}
           >
             {packedResult ? (
-              <div className="relative">
+              <div
+                className="relative flex flex-col items-center"
+                style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }}
+              >
                 <canvas
                   ref={canvasRef}
-                  style={{ transform: `scale(${zoom})`, transformOrigin: 'center' }}
                   className="shadow-xl rounded-lg"
                 />
+
+                {/* Failed images displayed directly below canvas */}
+                {packedResult.failed.length > 0 && (
+                  <div className="flex flex-wrap gap-0">
+                    {packedResult.failed.map((item) => (
+                      <div
+                        key={item.id}
+                        className="relative border-2 border-red-500 bg-red-50/50"
+                        title={`${item.name} (${item.width} × ${item.height})`}
+                      >
+                        <img
+                          src={item.url}
+                          alt={item.name}
+                          className="block"
+                          style={{ width: item.width, height: item.height }}
+                        />
+                        {/* Red overlay to indicate failure */}
+                        <div className="absolute inset-0 bg-red-500/20 pointer-events-none" />
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="text-center py-12">
@@ -466,12 +505,29 @@ export default function TexturePacker({ locale }: Props) {
           </div>
         </div>
 
+        {/* Failed Images Warning */}
+        {exceedsMaxSize && (
+          <div className="bg-red-50 border-2 border-red-200 rounded-2xl p-5">
+            <div className="flex items-start gap-3">
+              <span className="text-2xl">⚠️</span>
+              <div className="flex-1">
+                <h3 className="text-red-800 font-semibold mb-1">Output size exceeds maximum dimensions</h3>
+                <p className="text-red-600 text-sm">
+                  Current size: {packedResult?.width} × {packedResult?.height} | Maximum: {settings.maxWidth} × {settings.maxHeight}
+                </p>
+                <p className="text-red-500 text-xs mt-1">Increase the maximum width/height in the settings or remove some images.</p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Stats */}
         {packedResult && (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="bg-gradient-to-br from-indigo-500 to-indigo-600 rounded-2xl p-5 text-white">
               <p className="text-indigo-200 text-xs font-medium mb-1">{t.stats.size}</p>
               <p className="text-2xl font-bold">{packedResult.width} × {packedResult.height}</p>
+              {exceedsMaxSize && <p className="text-indigo-200 text-xs mt-1">Max: {settings.maxWidth} × {settings.maxHeight}</p>}
             </div>
             <div className="bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-2xl p-5 text-white">
               <p className="text-emerald-200 text-xs font-medium mb-1">{t.stats.images}</p>
