@@ -23,14 +23,18 @@ export default function TexturePacker({ locale }: Props) {
     extrude: 0,
   });
   const [exportFormat, setExportFormat] = useState<ExportFormat>('json');
-  const [imageName, setImageName] = useState('spritesheet.png');
+  const [outputDir, setOutputDir] = useState('');
+  const [selectedDirPath, setSelectedDirPath] = useState('');
+  const [fileName, setFileName] = useState('spritesheet');
   const [zoom, setZoom] = useState(1);
   const [showBorders, setShowBorders] = useState(true);
   const [bgColor, setBgColor] = useState('transparent');
   const [copied, setCopied] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [notification, setNotification] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const projectInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // Auto-pack when images or settings change
@@ -178,52 +182,243 @@ export default function TexturePacker({ locale }: Props) {
     }
   }, [packedResult, showBorders, bgColor, exceedsMaxSize, settings]);
 
-  const downloadImage = useCallback(() => {
-    if (!canvasRef.current) return;
-    const link = document.createElement('a');
-    link.download = imageName;
-    link.href = canvasRef.current.toDataURL('image/png');
-    link.click();
-  }, [imageName]);
+  // Directory handle for saving files
+  const dirHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
 
-  const downloadData = useCallback(() => {
-    if (!packedResult) return;
-    const data = generateExportData(packedResult.packed, packedResult.width, packedResult.height, exportFormat, imageName);
-
-    // For Cocos2d format, download both PNG and plist
-    if (exportFormat === 'cocos2d') {
-      // Download PNG image
-      if (canvasRef.current) {
-        const pngLink = document.createElement('a');
-        pngLink.download = imageName;
-        pngLink.href = canvasRef.current.toDataURL('image/png');
-        pngLink.click();
-      }
-
-      // Download plist file
-      const plistBlob = new Blob([data], { type: 'text/plain' });
-      const plistLink = document.createElement('a');
-      plistLink.download = imageName.replace(/\.[^/.]+$/, '.plist');
-      plistLink.href = URL.createObjectURL(plistBlob);
-      plistLink.click();
-    } else {
-      // For other formats, just download the data file
-      const ext = exportFormat === 'css' ? 'css' : exportFormat === 'xml' ? 'xml' : 'json';
-      const blob = new Blob([data], { type: 'text/plain' });
-      const link = document.createElement('a');
-      link.download = imageName.replace(/\.[^/.]+$/, `.${ext}`);
-      link.href = URL.createObjectURL(blob);
-      link.click();
+  const selectDirectory = useCallback(async () => {
+    try {
+      const handle = await (window as any).showDirectoryPicker();
+      dirHandleRef.current = handle;
+      setSelectedDirPath(handle.name);
+    } catch (error) {
+      // User cancelled or error
+      console.log('Directory selection cancelled or failed:', error);
     }
-  }, [packedResult, exportFormat, imageName]);
+  }, []);
+
+  const downloadAll = useCallback(async () => {
+    if (!packedResult || !canvasRef.current) return;
+
+    const imageNameForExport = outputDir ? `${outputDir}/${fileName}.png` : fileName + '.png';
+    const data = generateExportData(packedResult.packed, packedResult.width, packedResult.height, exportFormat, imageNameForExport);
+
+    // Check if directory handle exists and File System Access API is supported
+    if (dirHandleRef.current && 'showDirectoryPicker' in window) {
+      try {
+        // Save to selected directory
+        let targetDir = dirHandleRef.current;
+
+        // Create subdirectory if specified
+        if (outputDir) {
+          targetDir = await dirHandleRef.current.getDirectoryHandle(outputDir, { create: true });
+        }
+
+        // Save image file
+        const canvas = canvasRef.current;
+        const blob = await new Promise<Blob>((resolve) => {
+          canvas.toBlob((b) => resolve(b!), 'image/png');
+        });
+        const imageFileHandle = await targetDir.getFileHandle(fileName + '.png', { create: true });
+        const imageWritable = await imageFileHandle.createWritable();
+        await imageWritable.write(blob);
+        await imageWritable.close();
+
+        // Save data file
+        const ext = exportFormat === 'css' ? 'css' : exportFormat === 'xml' ? 'xml' : exportFormat === 'cocos2d' ? 'plist' : 'json';
+        const dataBlob = new Blob([data], { type: 'text/plain' });
+        const dataFileHandle = await targetDir.getFileHandle(fileName + '.' + ext, { create: true });
+        const dataWritable = await dataFileHandle.createWritable();
+        await dataWritable.write(dataBlob);
+        await dataWritable.close();
+
+        setNotification('Files saved successfully!');
+        setTimeout(() => setNotification(null), 3000);
+        return;
+      } catch (error) {
+        console.error('Failed to save with File System Access API:', error);
+        // Fall back to traditional download
+      }
+    }
+
+    // Traditional download method (fallback)
+    const imageLink = document.createElement('a');
+    imageLink.download = fileName + '.png';
+    imageLink.href = canvasRef.current.toDataURL('image/png');
+    imageLink.click();
+
+    const ext = exportFormat === 'css' ? 'css' : exportFormat === 'xml' ? 'xml' : exportFormat === 'cocos2d' ? 'plist' : 'json';
+    const blob = new Blob([data], { type: 'text/plain' });
+    const dataLink = document.createElement('a');
+    dataLink.download = fileName + '.' + ext;
+    dataLink.href = URL.createObjectURL(blob);
+    dataLink.click();
+  }, [packedResult, exportFormat, fileName, outputDir]);
 
   const copyData = useCallback(() => {
     if (!packedResult) return;
-    const data = generateExportData(packedResult.packed, packedResult.width, packedResult.height, exportFormat, imageName);
+    const imageNameForExport = outputDir ? `${outputDir}/${fileName}.png` : fileName + '.png';
+    const data = generateExportData(packedResult.packed, packedResult.width, packedResult.height, exportFormat, imageNameForExport);
     navigator.clipboard.writeText(data);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  }, [packedResult, exportFormat, imageName]);
+  }, [packedResult, exportFormat, fileName, outputDir]);
+
+  // Save project to .tps file
+  const saveProject = useCallback(async () => {
+    try {
+      // Convert images to base64 for storage
+      const imagesData = images.map(img => ({
+        ...img,
+        imageData: img.url, // Already base64 data URL
+      }));
+
+      const projectData = {
+        version: '1.0',
+        settings,
+        exportFormat,
+        outputDir,
+        fileName,
+        selectedDirPath, // Save the selected directory path
+        images: imagesData,
+      };
+
+      const projectFileName = `${fileName}.tps`;
+
+      // Check if directory handle exists and File System Access API is supported
+      if (dirHandleRef.current && 'showDirectoryPicker' in window) {
+        try {
+          let targetDir = dirHandleRef.current;
+
+          // Create subdirectory if specified
+          if (outputDir) {
+            targetDir = await dirHandleRef.current.getDirectoryHandle(outputDir, { create: true });
+          }
+
+          // Check if project file already exists
+          try {
+            // Try to get the existing file
+            const existingFileHandle = await targetDir.getFileHandle(projectFileName);
+            // File exists, overwrite it
+            const writable = await existingFileHandle.createWritable();
+            await writable.write(JSON.stringify(projectData, null, 2));
+            await writable.close();
+            setNotification(t.project.saved);
+            setTimeout(() => setNotification(null), 3000);
+            return;
+          } catch (error) {
+            // File doesn't exist, create new one
+            const newFileHandle = await targetDir.getFileHandle(projectFileName, { create: true });
+            const writable = await newFileHandle.createWritable();
+            await writable.write(JSON.stringify(projectData, null, 2));
+            await writable.close();
+            setNotification(t.project.saved);
+            setTimeout(() => setNotification(null), 3000);
+            return;
+          }
+        } catch (error) {
+          console.error('Failed to save with File System Access API:', error);
+          // Fall back to traditional download
+        }
+      }
+
+      // Traditional download method (fallback)
+      const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
+      const link = document.createElement('a');
+      link.download = projectFileName;
+      link.href = URL.createObjectURL(blob);
+      link.click();
+
+      setNotification(t.project.saved);
+      setTimeout(() => setNotification(null), 3000);
+    } catch (error) {
+      console.error('Save error:', error);
+      setNotification(t.project.saveError);
+      setTimeout(() => setNotification(null), 3000);
+    }
+  }, [images, settings, exportFormat, outputDir, fileName, selectedDirPath, t.project.saved, t.project.saveError]);
+
+  const openProject = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const content = e.target?.result as string;
+        const projectData = JSON.parse(content);
+
+        // Validate project structure
+        if (!projectData.version || !projectData.images) {
+          throw new Error('Invalid project format');
+        }
+
+        // Load images from base64
+        const loadedImages: ImageItem[] = [];
+        for (const imgData of projectData.images) {
+          try {
+            const img = await new Promise<ImageItem>((resolve, reject) => {
+              const image = new Image();
+              image.onload = () => {
+                resolve({
+                  id: imgData.id,
+                  name: imgData.name,
+                  width: image.width,
+                  height: image.height,
+                  image: image,
+                  url: imgData.imageData,
+                });
+              };
+              image.onerror = () => reject(new Error('Failed to load image'));
+              image.src = imgData.imageData;
+            });
+            loadedImages.push(img);
+          } catch (error) {
+            console.error(`Failed to load image: ${imgData.name}`, error);
+          }
+        }
+
+        // Restore settings
+        if (projectData.settings) {
+          setSettings(projectData.settings);
+        }
+        if (projectData.exportFormat) {
+          setExportFormat(projectData.exportFormat);
+        }
+        if (projectData.outputDir) {
+          setOutputDir(projectData.outputDir);
+        }
+        if (projectData.fileName) {
+          setFileName(projectData.fileName);
+        }
+
+        // Restore selected directory path if it was saved
+        if (projectData.selectedDirPath) {
+          setSelectedDirPath(projectData.selectedDirPath);
+          // Note: The directory handle cannot be restored due to browser security
+          // User will need to re-select the directory when saving
+        }
+
+        setImages(loadedImages);
+        setNotification(t.project.loaded);
+        setTimeout(() => setNotification(null), 3000);
+      } catch (error) {
+        console.error('Load error:', error);
+        setNotification(t.project.loadError);
+        setTimeout(() => setNotification(null), 3000);
+      }
+    };
+    reader.readAsText(file);
+  }, [t.project.loaded, t.project.loadError]);
+
+  const handleProjectFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const ext = file.name.toLowerCase();
+    if (ext.endsWith('.tps') || ext.endsWith('.pvr') || ext.endsWith('.pvr.ccz') || ext.endsWith('.pvr.gz')) {
+      openProject(file);
+    } else {
+      setNotification(t.project.unsupportedFormat);
+      setTimeout(() => setNotification(null), 3000);
+    }
+  }, [openProject, t.project.unsupportedFormat]);
 
   const efficiency = packedResult
     ? ((packedResult.packed.reduce((sum, item) => sum + item.width * item.height, 0) / (packedResult.width * packedResult.height)) * 100).toFixed(1)
@@ -566,11 +761,43 @@ export default function TexturePacker({ locale }: Props) {
 
         {/* Export */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
-          <h2 className="text-base font-semibold text-gray-800 mb-4 flex items-center gap-2">
-            <span className="w-8 h-8 bg-orange-100 rounded-lg flex items-center justify-center text-orange-600">💾</span>
-            {t.export.title}
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-base font-semibold text-gray-800 flex items-center gap-2">
+              <span className="w-8 h-8 bg-orange-100 rounded-lg flex items-center justify-center text-orange-600">💾</span>
+              {t.export.title}
+            </h2>
+            {/* Project Buttons */}
+            <div className="flex gap-2">
+              <button
+                onClick={() => projectInputRef.current?.click()}
+                className="text-xs px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition font-medium"
+              >
+                {t.project.open}
+              </button>
+              <button
+                onClick={saveProject}
+                className="text-xs px-3 py-1.5 bg-green-50 text-green-600 rounded-lg hover:bg-green-100 transition font-medium"
+              >
+                {t.project.save}
+              </button>
+              <input
+                ref={projectInputRef}
+                type="file"
+                accept=".tps,.pvr,.pvr.ccz,.pvr.gz"
+                className="hidden"
+                onChange={handleProjectFileSelect}
+              />
+            </div>
+          </div>
+
+          {/* Notification */}
+          {notification && (
+            <div className="mb-4 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg text-blue-700 text-sm">
+              {notification}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1.5">{t.export.format}</label>
               <select
@@ -584,29 +811,66 @@ export default function TexturePacker({ locale }: Props) {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1.5">{t.export.imageName}</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1.5">{t.export.outputDir}</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={selectedDirPath || 'Click to select directory'}
+                  onClick={selectDirectory}
+                  readOnly
+                  placeholder="Click to select directory"
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-gray-50 cursor-pointer hover:bg-gray-100 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition"
+                />
+                <input
+                  type="text"
+                  value={outputDir}
+                  onChange={(e) => setOutputDir(e.target.value)}
+                  placeholder="subdir"
+                  className="w-24 border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-gray-50 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1.5">{t.export.fileName}</label>
               <input
                 type="text"
-                value={imageName}
-                onChange={(e) => setImageName(e.target.value)}
+                value={fileName}
+                onChange={(e) => setFileName(e.target.value)}
+                placeholder="spritesheet"
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-gray-50 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition"
               />
             </div>
           </div>
+
+          {/* File paths preview */}
+          <div className="mb-5 p-3 bg-gray-50 rounded-lg space-y-1">
+            {dirHandleRef.current && (
+              <div className="text-xs text-green-600 flex items-center gap-2 mb-2">
+                <span>✓</span>
+                <span>Output to: <strong>{selectedDirPath}</strong></span>
+              </div>
+            )}
+            <div className="text-xs text-gray-500 flex items-center gap-2">
+              <span className="font-medium">Image:</span>
+              <code className="text-xs bg-gray-200 px-2 py-0.5 rounded">
+                {selectedDirPath ? `${selectedDirPath}/` : ''}{outputDir ? `${outputDir}/` : ''}{fileName}.png
+              </code>
+            </div>
+            <div className="text-xs text-gray-500 flex items-center gap-2">
+              <span className="font-medium">Data:</span>
+              <code className="text-xs bg-gray-200 px-2 py-0.5 rounded">
+                {selectedDirPath ? `${selectedDirPath}/` : ''}{outputDir ? `${outputDir}/` : ''}{fileName}.{exportFormat === 'css' ? 'css' : exportFormat === 'xml' ? 'xml' : exportFormat === 'cocos2d' ? 'plist' : 'json'}
+              </code>
+            </div>
+          </div>
+
           <div className="flex gap-3">
             <button
-              onClick={downloadImage}
+              onClick={downloadAll}
               disabled={!packedResult}
-              className="flex-1 bg-gradient-to-r from-indigo-500 to-indigo-600 text-white py-3 rounded-xl font-medium hover:from-indigo-600 hover:to-indigo-700 transition shadow-sm shadow-indigo-200 disabled:from-gray-300 disabled:to-gray-300 disabled:shadow-none disabled:cursor-not-allowed"
+              className="flex-2 bg-gradient-to-r from-indigo-500 to-indigo-600 text-white py-3 rounded-xl font-medium hover:from-indigo-600 hover:to-indigo-700 transition shadow-sm shadow-indigo-200 disabled:from-gray-300 disabled:to-gray-300 disabled:shadow-none disabled:cursor-not-allowed px-8"
             >
-              {t.export.downloadImage}
-            </button>
-            <button
-              onClick={downloadData}
-              disabled={!packedResult}
-              className="flex-1 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white py-3 rounded-xl font-medium hover:from-emerald-600 hover:to-emerald-700 transition shadow-sm shadow-emerald-200 disabled:from-gray-300 disabled:to-gray-300 disabled:shadow-none disabled:cursor-not-allowed"
-            >
-              {t.export.downloadData}
+              {t.export.download}
             </button>
             <button
               onClick={copyData}
