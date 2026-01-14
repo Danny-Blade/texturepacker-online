@@ -23,7 +23,6 @@ export default function TexturePacker({ locale }: Props) {
     extrude: 0,
   });
   const [exportFormat, setExportFormat] = useState<ExportFormat>('json');
-  const [outputDir, setOutputDir] = useState('');
   const [selectedDirPath, setSelectedDirPath] = useState('');
   const [fileName, setFileName] = useState('spritesheet');
   const [zoom, setZoom] = useState(1);
@@ -199,19 +198,14 @@ export default function TexturePacker({ locale }: Props) {
   const downloadAll = useCallback(async () => {
     if (!packedResult || !canvasRef.current) return;
 
-    const imageNameForExport = outputDir ? `${outputDir}/${fileName}.png` : fileName + '.png';
+    const imageNameForExport = fileName + '.png';
     const data = generateExportData(packedResult.packed, packedResult.width, packedResult.height, exportFormat, imageNameForExport);
 
     // Check if directory handle exists and File System Access API is supported
     if (dirHandleRef.current && 'showDirectoryPicker' in window) {
       try {
         // Save to selected directory
-        let targetDir = dirHandleRef.current;
-
-        // Create subdirectory if specified
-        if (outputDir) {
-          targetDir = await dirHandleRef.current.getDirectoryHandle(outputDir, { create: true });
-        }
+        const targetDir = dirHandleRef.current;
 
         // Save image file
         const canvas = canvasRef.current;
@@ -252,16 +246,16 @@ export default function TexturePacker({ locale }: Props) {
     dataLink.download = fileName + '.' + ext;
     dataLink.href = URL.createObjectURL(blob);
     dataLink.click();
-  }, [packedResult, exportFormat, fileName, outputDir]);
+  }, [packedResult, exportFormat, fileName]);
 
   const copyData = useCallback(() => {
     if (!packedResult) return;
-    const imageNameForExport = outputDir ? `${outputDir}/${fileName}.png` : fileName + '.png';
+    const imageNameForExport = fileName + '.png';
     const data = generateExportData(packedResult.packed, packedResult.width, packedResult.height, exportFormat, imageNameForExport);
     navigator.clipboard.writeText(data);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  }, [packedResult, exportFormat, fileName, outputDir]);
+  }, [packedResult, exportFormat, fileName]);
 
   // Save project to .tps file
   const saveProject = useCallback(async () => {
@@ -276,7 +270,6 @@ export default function TexturePacker({ locale }: Props) {
         version: '1.0',
         settings,
         exportFormat,
-        outputDir,
         fileName,
         selectedDirPath, // Save the selected directory path
         images: imagesData,
@@ -287,12 +280,8 @@ export default function TexturePacker({ locale }: Props) {
       // Check if directory handle exists and File System Access API is supported
       if (dirHandleRef.current && 'showDirectoryPicker' in window) {
         try {
-          let targetDir = dirHandleRef.current;
-
-          // Create subdirectory if specified
-          if (outputDir) {
-            targetDir = await dirHandleRef.current.getDirectoryHandle(outputDir, { create: true });
-          }
+          // Save to selected directory
+          const targetDir = dirHandleRef.current;
 
           // Check if project file already exists
           try {
@@ -335,7 +324,7 @@ export default function TexturePacker({ locale }: Props) {
       setNotification(t.project.saveError);
       setTimeout(() => setNotification(null), 3000);
     }
-  }, [images, settings, exportFormat, outputDir, fileName, selectedDirPath, t.project.saved, t.project.saveError]);
+  }, [images, settings, exportFormat, fileName, selectedDirPath, t.project.saved, t.project.saveError]);
 
   const openProject = useCallback((file: File) => {
     const reader = new FileReader();
@@ -380,9 +369,6 @@ export default function TexturePacker({ locale }: Props) {
         }
         if (projectData.exportFormat) {
           setExportFormat(projectData.exportFormat);
-        }
-        if (projectData.outputDir) {
-          setOutputDir(projectData.outputDir);
         }
         if (projectData.fileName) {
           setFileName(projectData.fileName);
@@ -812,23 +798,14 @@ export default function TexturePacker({ locale }: Props) {
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1.5">{t.export.outputDir}</label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={selectedDirPath || 'Click to select directory'}
-                  onClick={selectDirectory}
-                  readOnly
-                  placeholder="Click to select directory"
-                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-gray-50 cursor-pointer hover:bg-gray-100 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition"
-                />
-                <input
-                  type="text"
-                  value={outputDir}
-                  onChange={(e) => setOutputDir(e.target.value)}
-                  placeholder="subdir"
-                  className="w-24 border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-gray-50 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition"
-                />
-              </div>
+              <input
+                type="text"
+                value={selectedDirPath || 'Click to select directory'}
+                onClick={selectDirectory}
+                readOnly
+                placeholder="Click to select directory"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-gray-50 cursor-pointer hover:bg-gray-100 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition"
+              />
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1.5">{t.export.fileName}</label>
@@ -853,13 +830,13 @@ export default function TexturePacker({ locale }: Props) {
             <div className="text-xs text-gray-500 flex items-center gap-2">
               <span className="font-medium">Image:</span>
               <code className="text-xs bg-gray-200 px-2 py-0.5 rounded">
-                {selectedDirPath ? `${selectedDirPath}/` : ''}{outputDir ? `${outputDir}/` : ''}{fileName}.png
+                {selectedDirPath ? `${selectedDirPath}/` : ''}{fileName}.png
               </code>
             </div>
             <div className="text-xs text-gray-500 flex items-center gap-2">
               <span className="font-medium">Data:</span>
               <code className="text-xs bg-gray-200 px-2 py-0.5 rounded">
-                {selectedDirPath ? `${selectedDirPath}/` : ''}{outputDir ? `${outputDir}/` : ''}{fileName}.{exportFormat === 'css' ? 'css' : exportFormat === 'xml' ? 'xml' : exportFormat === 'cocos2d' ? 'plist' : 'json'}
+                {selectedDirPath ? `${selectedDirPath}/` : ''}{fileName}.{exportFormat === 'css' ? 'css' : exportFormat === 'xml' ? 'xml' : exportFormat === 'cocos2d' ? 'plist' : 'json'}
               </code>
             </div>
           </div>
@@ -868,16 +845,9 @@ export default function TexturePacker({ locale }: Props) {
             <button
               onClick={downloadAll}
               disabled={!packedResult}
-              className="flex-2 bg-gradient-to-r from-indigo-500 to-indigo-600 text-white py-3 rounded-xl font-medium hover:from-indigo-600 hover:to-indigo-700 transition shadow-sm shadow-indigo-200 disabled:from-gray-300 disabled:to-gray-300 disabled:shadow-none disabled:cursor-not-allowed px-8"
+              className="w-full bg-gradient-to-r from-indigo-500 to-indigo-600 text-white py-3 rounded-xl font-medium hover:from-indigo-600 hover:to-indigo-700 transition shadow-sm shadow-indigo-200 disabled:from-gray-300 disabled:to-gray-300 disabled:shadow-none disabled:cursor-not-allowed"
             >
               {t.export.download}
-            </button>
-            <button
-              onClick={copyData}
-              disabled={!packedResult}
-              className="flex-1 bg-gradient-to-r from-gray-600 to-gray-700 text-white py-3 rounded-xl font-medium hover:from-gray-700 hover:to-gray-800 transition shadow-sm shadow-gray-200 disabled:from-gray-300 disabled:to-gray-300 disabled:shadow-none disabled:cursor-not-allowed"
-            >
-              {copied ? '✓ ' + t.export.copied : t.export.copyData}
             </button>
           </div>
         </div>
