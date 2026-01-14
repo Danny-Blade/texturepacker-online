@@ -189,12 +189,32 @@ export default function TexturePacker({ locale }: Props) {
   const downloadData = useCallback(() => {
     if (!packedResult) return;
     const data = generateExportData(packedResult.packed, packedResult.width, packedResult.height, exportFormat, imageName);
-    const ext = exportFormat === 'css' ? 'css' : exportFormat === 'xml' ? 'xml' : 'json';
-    const blob = new Blob([data], { type: 'text/plain' });
-    const link = document.createElement('a');
-    link.download = imageName.replace(/\.[^/.]+$/, `.${ext}`);
-    link.href = URL.createObjectURL(blob);
-    link.click();
+
+    // For Cocos2d format, download both PNG and plist
+    if (exportFormat === 'cocos2d') {
+      // Download PNG image
+      if (canvasRef.current) {
+        const pngLink = document.createElement('a');
+        pngLink.download = imageName;
+        pngLink.href = canvasRef.current.toDataURL('image/png');
+        pngLink.click();
+      }
+
+      // Download plist file
+      const plistBlob = new Blob([data], { type: 'text/plain' });
+      const plistLink = document.createElement('a');
+      plistLink.download = imageName.replace(/\.[^/.]+$/, '.plist');
+      plistLink.href = URL.createObjectURL(plistBlob);
+      plistLink.click();
+    } else {
+      // For other formats, just download the data file
+      const ext = exportFormat === 'css' ? 'css' : exportFormat === 'xml' ? 'xml' : 'json';
+      const blob = new Blob([data], { type: 'text/plain' });
+      const link = document.createElement('a');
+      link.download = imageName.replace(/\.[^/.]+$/, `.${ext}`);
+      link.href = URL.createObjectURL(blob);
+      link.click();
+    }
   }, [packedResult, exportFormat, imageName]);
 
   const copyData = useCallback(() => {

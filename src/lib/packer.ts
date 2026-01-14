@@ -325,26 +325,43 @@ function generateXML(packed: PackedItem[], width: number, height: number, imageN
 }
 
 function generateCocos2d(packed: PackedItem[], width: number, height: number, imageName: string): string {
-  const plist = {
-    frames: {} as Record<string, object>,
-    metadata: {
-      format: 2,
-      size: `{${width},${height}}`,
-      textureFileName: imageName,
-    },
-  };
+  let plist = '<?xml version="1.0" encoding="UTF-8"?>\n';
+  plist += '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n';
+  plist += '<plist version="1.0">\n';
+  plist += '<dict>\n';
+  plist += '  <key>frames</key>\n';
+  plist += '  <dict>\n';
 
   packed.forEach((item) => {
-    plist.frames[item.name] = {
-      frame: `{{${item.x},${item.y}},{${item.width},${item.height}}}`,
-      offset: '{0,0}',
-      rotated: item.rotated,
-      sourceColorRect: `{{0,0},{${item.width},${item.height}}}`,
-      sourceSize: `{${item.width},${item.height}}`,
-    };
+    plist += `    <key>${item.name}</key>\n`;
+    plist += '    <dict>\n';
+    plist += `      <key>frame</key>\n`;
+    plist += `      <string>{{${Math.round(item.x)},${Math.round(item.y)},{${item.width},${item.height}}}</string>\n`;
+    plist += `      <key>offset</key>\n`;
+    plist += `      <string>{0,0}</string>\n`;
+    plist += `      <key>rotated</key>\n`;
+    plist += `      <${item.rotated ? 'true' : 'false'}/>\n`;
+    plist += `      <key>sourceColorRect</key>\n`;
+    plist += `      <string>{{0,0},{${item.width},${item.height}}}</string>\n`;
+    plist += `      <key>sourceSize</key>\n`;
+    plist += `      <string>{${item.width},${item.height}}</string>\n`;
+    plist += '    </dict>\n';
   });
 
-  return JSON.stringify(plist, null, 2);
+  plist += '  </dict>\n';
+  plist += '  <key>metadata</key>\n';
+  plist += '  <dict>\n';
+  plist += '    <key>format</key>\n';
+  plist += '    <integer>2</integer>\n';
+  plist += '    <key>size</key>\n';
+  plist += `    <string>{${width},${height}}</string>\n`;
+  plist += '    <key>textureFileName</key>\n';
+  plist += `    <string>${imageName}</string>\n`;
+  plist += '  </dict>\n';
+  plist += '</dict>\n';
+  plist += '</plist>';
+
+  return plist;
 }
 
 function generatePhaser3(packed: PackedItem[], width: number, height: number, imageName: string): string {
