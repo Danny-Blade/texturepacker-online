@@ -7,9 +7,11 @@ import {
   PackedItem,
   PackerOptions,
   PackingAlgorithm,
-  MaxRectsPacker,
-  nextPowerOfTwo,
+  PackResult,
+  PackSheet,
+  packIntoSheets,
 } from './packer';
+import { prepareSpriteForAtlas } from './imageProcessing';
 
 export type ThemeMode = 'dark' | 'light';
 
@@ -17,11 +19,15 @@ export type BackgroundMode = 'checker' | 'solid' | 'transparent';
 
 export type SortMode = 'manual' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc';
 
-export interface PackResult {
-  packed: PackedItem[];
-  failed: PackedItem[];
-  width: number;
-  height: number;
+export type ImageFileFormat = 'png' | 'jpg' | 'webp';
+
+export interface PublishOptions {
+  imageFormat: ImageFileFormat;
+  imageQuality: number; // 0..1, used for jpg/webp
+  scales: number[]; // e.g. [1] or [1, 2, 0.5]
+  imageFileTemplate: string; // supports {n}
+  dataFileTemplate: string;
+  bundleZip: boolean;
 }
 
 export interface InspectorSectionState {
@@ -44,6 +50,8 @@ export interface TexturePackerState {
   fileName: string;
   selectedDirPath: string;
   dirHandle: FileSystemDirectoryHandle | null;
+  publishOptions: PublishOptions;
+  activeSheet: number;
 
   // viewport
   zoom: number;
@@ -93,6 +101,8 @@ export interface TexturePackerState {
   setFileName: (name: string) => void;
   setSelectedDirPath: (p: string) => void;
   setDirHandle: (h: FileSystemDirectoryHandle | null) => void;
+  setPublishOptions: (patch: Partial<PublishOptions>) => void;
+  setActiveSheet: (idx: number) => void;
 
   // actions — viewport
   setZoom: (z: number) => void;
@@ -120,32 +130,30 @@ const initialSettings: PackerOptions = {
   maxWidth: 2048,
   maxHeight: 2048,
   padding: 2,
+  borderPadding: 0,
+  shapePadding: 2,
   allowRotation: false,
   powerOfTwo: true,
+  forceSquare: false,
   algorithm: 'maxrects-bssf',
   trimAlpha: false,
+  trimThreshold: 1,
   extrude: 0,
+  multipack: false,
+};
+
+const initialPublishOptions: PublishOptions = {
+  imageFormat: 'png',
+  imageQuality: 0.92,
+  scales: [1],
+  imageFileTemplate: '{name}{suffix}{n}.{ext}',
+  dataFileTemplate: '{name}{suffix}{n}.{ext}',
+  bundleZip: false,
 };
 
 function runPack(images: ImageItem[], settings: PackerOptions): PackResult | null {
   if (images.length === 0) return null;
-  const packer = new MaxRectsPacker(settings);
-  const packed = packer.pack(images);
-  const bounds = packer.getUsedBounds();
-  let w = bounds.width;
-  let h = bounds.height;
-  if (settings.powerOfTwo) {
-    w = nextPowerOfTwo(w);
-    h = nextPowerOfTwo(h);
-  }
-  w = Math.max(w, 1);
-  h = Math.max(h, 1);
-  return {
-    packed: packed.filter((p) => p.placed),
-    failed: packed.filter((p) => !p.placed),
-    width: w,
-    height: h,
-  };
+  return packIntoSheets(images, settings, prepareSpriteForAtlas);
 }
 
 export const useTpStore = create<TexturePackerState>((set, get) => ({
@@ -158,6 +166,8 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
   fileName: 'spritesheet',
   selectedDirPath: '',
   dirHandle: null,
+  publishOptions: initialPublishOptions,
+  activeSheet: 0,
 
   zoom: 1,
   pan: { x: 0, y: 0 },
@@ -270,6 +280,14 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
   setFileName: (name) => set({ fileName: name }),
   setSelectedDirPath: (p) => set({ selectedDirPath: p }),
   setDirHandle: (h) => set({ dirHandle: h }),
+  setPublishOptions: (patch) =>
+    set((s) => ({ publishOptions: { ...s.publishOptions, ...patch } })),
+  setActiveSheet: (idx) =>
+    set((s) => {
+      const total = s.packResult?.sheets.length ?? 0;
+      if (total === 0) return { activeSheet: 0 };
+      return { activeSheet: Math.max(0, Math.min(idx, total - 1)) };
+    }),
 
   setZoom: (z) => set({ zoom: Math.max(0.1, Math.min(8, z)) }),
   zoomIn: () => set((s) => ({ zoom: Math.min(8, +(s.zoom * 1.2).toFixed(3)) })),
@@ -327,15 +345,29 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
 
 export function selectEfficiency(s: TexturePackerState): number {
   const r = s.packResult;
-  if (!r || r.packed.length === 0) return 0;
-  const used = r.packed.reduce((sum, it) => sum + it.width * it.height, 0);
-  return +((used / (r.width * r.height)) * 100).toFixed(1);
+  if (!r || r.sheets.length === 0) return 0;
+  let used = 0;
+  let total = 0;
+  for (const sh of r.sheets) {
+    for (const it of sh.packed) used += it.width * it.height;
+    total += sh.width * sh.height;
+  }
+  if (total === 0) return 0;
+  return +((used / total) * 100).toFixed(1);
 }
 
 export function selectExceedsMax(s: TexturePackerState): boolean {
   const r = s.packResult;
   if (!r) return false;
-  return r.width > s.settings.maxWidth || r.height > s.settings.maxHeight;
+  return r.sheets.some(
+    (sh) => sh.width > s.settings.maxWidth || sh.height > s.settings.maxHeight,
+  );
+}
+
+export function selectActiveSheet(s: TexturePackerState): PackSheet | null {
+  const r = s.packResult;
+  if (!r || r.sheets.length === 0) return null;
+  return r.sheets[Math.max(0, Math.min(s.activeSheet, r.sheets.length - 1))] ?? null;
 }
 
 export function loadImageFromFile(file: File): Promise<ImageItem> {
@@ -364,4 +396,12 @@ export function loadImageFromFile(file: File): Promise<ImageItem> {
   });
 }
 
-export type { ExportFormat, ImageItem, PackedItem, PackerOptions, PackingAlgorithm };
+export type {
+  ExportFormat,
+  ImageItem,
+  PackedItem,
+  PackerOptions,
+  PackingAlgorithm,
+  PackResult,
+  PackSheet,
+};

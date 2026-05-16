@@ -146,13 +146,17 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
     }
 
     packed.forEach((item) => {
+      const src = item.pixelSource ?? item.image;
+      const ex = item.extrudePadding ?? 0;
+      // Offset by -ex so the halo lands in the padding ring around the frame:
+      // item.x/y address the inner frame, but pixelSource bakes the halo around it.
       ctx.save();
       if (item.rotated) {
         ctx.translate(item.x + item.height, item.y);
         ctx.rotate(Math.PI / 2);
-        ctx.drawImage(item.image, 0, 0, item.width, item.height);
+        ctx.drawImage(src, -ex, -ex, item.width + ex * 2, item.height + ex * 2);
       } else {
-        ctx.drawImage(item.image, item.x, item.y, item.width, item.height);
+        ctx.drawImage(src, item.x - ex, item.y - ex, item.width + ex * 2, item.height + ex * 2);
       }
       ctx.restore();
 

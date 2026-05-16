@@ -10,34 +10,25 @@ interface InspectorProps {
   locale: 'en' | 'zh';
 }
 
+import { FORMATS, ALL_EXPORT_FORMATS } from '@/lib/formats';
+
 const ALGORITHMS: PackingAlgorithm[] = [
+  'maxrects-best',
   'maxrects-bssf',
   'maxrects-blsf',
   'maxrects-baf',
+  'maxrects-bl',
+  'maxrects-cp',
   'shelf',
 ];
 
-const EXPORT_FORMATS: ExportFormat[] = [
-  'json',
-  'json-array',
-  'css',
-  'xml',
-  'cocos2d',
-  'phaser3',
-  'unity',
-];
+const EXPORT_FORMATS: ExportFormat[] = ALL_EXPORT_FORMATS;
 
 const SIZE_OPTIONS = [256, 512, 1024, 2048, 4096, 8192] as const;
 
-const FORMAT_EXT: Record<ExportFormat, string> = {
-  json: 'json',
-  'json-array': 'json',
-  css: 'css',
-  xml: 'xml',
-  cocos2d: 'plist',
-  phaser3: 'json',
-  unity: 'json',
-};
+const FORMAT_EXT: Record<ExportFormat, string> = Object.fromEntries(
+  ALL_EXPORT_FORMATS.map((fmt) => [fmt, FORMATS[fmt].extension]),
+) as Record<ExportFormat, string>;
 
 function ChevronIcon({ open }: { open: boolean }) {
   return (

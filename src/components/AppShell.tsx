@@ -195,13 +195,17 @@ export default function AppShell({ locale }: AppShellProps) {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     packResult.packed.forEach((item) => {
+      const src = item.pixelSource ?? item.image;
+      const ex = item.extrudePadding ?? 0;
+      // Offset by -ex so the extrude halo lands in the padding ring around the
+      // inner frame (pixelSource is sized width+2*ex × height+2*ex).
       ctx.save();
       if (item.rotated) {
         ctx.translate(item.x + item.height, item.y);
         ctx.rotate(Math.PI / 2);
-        ctx.drawImage(item.image, 0, 0, item.width, item.height);
+        ctx.drawImage(src, -ex, -ex, item.width + ex * 2, item.height + ex * 2);
       } else {
-        ctx.drawImage(item.image, item.x, item.y, item.width, item.height);
+        ctx.drawImage(src, item.x - ex, item.y - ex, item.width + ex * 2, item.height + ex * 2);
       }
       ctx.restore();
     });
