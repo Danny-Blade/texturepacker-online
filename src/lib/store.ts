@@ -15,6 +15,8 @@ export type ThemeMode = 'dark' | 'light';
 
 export type BackgroundMode = 'checker' | 'solid' | 'transparent';
 
+export type SortMode = 'manual' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc';
+
 export interface PackResult {
   packed: PackedItem[];
   failed: PackedItem[];
@@ -57,6 +59,11 @@ export interface TexturePackerState {
   rightPanelWidth: number;
   notification: string | null;
 
+  // sprite browser
+  sortMode: SortMode;
+  collapsedFolders: string[]; // serialisable; convert to Set in selectors when needed
+  renamingId: string | null;
+
   // derived (cached)
   packResult: PackResult | null;
 
@@ -67,6 +74,16 @@ export interface TexturePackerState {
   selectImages: (ids: string[]) => void;
   toggleSelectImage: (id: string, additive?: boolean) => void;
   reorderImages: (fromIds: string[], beforeId: string | null) => void;
+  reorderImagesInto: (fromIds: string[], folderPath: string, beforeId: string | null) => void;
+  renameImage: (id: string, newName: string) => void;
+  startRename: (id: string | null) => void;
+
+  // actions — sprite browser
+  setSortMode: (m: SortMode) => void;
+  toggleFolder: (folderPath: string) => void;
+  setFolderCollapsed: (folderPath: string, collapsed: boolean) => void;
+  expandAllFolders: () => void;
+  collapseAllFolders: (folders: string[]) => void;
 
   // actions — settings
   setSettings: (patch: Partial<PackerOptions>) => void;
@@ -153,11 +170,15 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
     output: true,
     data: true,
     layout: true,
-    sprites: false,
+    sprites: true,
   },
   leftPanelWidth: 280,
   rightPanelWidth: 320,
   notification: null,
+
+  sortMode: 'manual',
+  collapsedFolders: [],
+  renamingId: null,
 
   packResult: null,
 
@@ -203,6 +224,42 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
       return { images, packResult: runPack(images, s.settings) };
     }),
 
+  reorderImagesInto: (fromIds, folderPath, beforeId) =>
+    set((s) => {
+      const moving = s.images.filter((i) => fromIds.includes(i.id));
+      if (moving.length === 0) return {};
+      const rest = s.images.filter((i) => !fromIds.includes(i.id));
+      const reparented = moving.map((img) => {
+        const base = img.name.split('/').pop() || img.name;
+        const newName = folderPath ? `${folderPath}/${base}` : base;
+        return { ...img, name: newName };
+      });
+      let insertAt = rest.length;
+      if (beforeId) {
+        const idx = rest.findIndex((i) => i.id === beforeId);
+        if (idx >= 0) insertAt = idx;
+      } else if (folderPath) {
+        // append at end of target folder block
+        const lastIdx = rest.reduce((acc, img, idx) => {
+          const dir = img.name.includes('/') ? img.name.slice(0, img.name.lastIndexOf('/')) : '';
+          return dir === folderPath || dir.startsWith(`${folderPath}/`) ? idx : acc;
+        }, -1);
+        if (lastIdx >= 0) insertAt = lastIdx + 1;
+      }
+      const images = [...rest.slice(0, insertAt), ...reparented, ...rest.slice(insertAt)];
+      return { images, packResult: runPack(images, s.settings) };
+    }),
+
+  renameImage: (id, newName) =>
+    set((s) => {
+      const trimmed = newName.trim();
+      if (!trimmed) return {};
+      const images = s.images.map((img) => (img.id === id ? { ...img, name: trimmed } : img));
+      return { images, renamingId: null };
+    }),
+
+  startRename: (id) => set({ renamingId: id }),
+
   setSettings: (patch) =>
     set((s) => {
       const settings = { ...s.settings, ...patch };
@@ -228,6 +285,29 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
     set((s) => ({
       inspectorSections: { ...s.inspectorSections, [k]: !s.inspectorSections[k] },
     })),
+
+  setSortMode: (m) => set({ sortMode: m }),
+
+  toggleFolder: (folderPath) =>
+    set((s) => {
+      const has = s.collapsedFolders.includes(folderPath);
+      return {
+        collapsedFolders: has
+          ? s.collapsedFolders.filter((p) => p !== folderPath)
+          : [...s.collapsedFolders, folderPath],
+      };
+    }),
+
+  setFolderCollapsed: (folderPath, collapsed) =>
+    set((s) => {
+      const has = s.collapsedFolders.includes(folderPath);
+      if (collapsed && !has) return { collapsedFolders: [...s.collapsedFolders, folderPath] };
+      if (!collapsed && has) return { collapsedFolders: s.collapsedFolders.filter((p) => p !== folderPath) };
+      return {};
+    }),
+
+  expandAllFolders: () => set({ collapsedFolders: [] }),
+  collapseAllFolders: (folders) => set({ collapsedFolders: folders }),
 
   setLeftPanelWidth: (w) => set({ leftPanelWidth: Math.max(200, Math.min(560, w)) }),
   setRightPanelWidth: (w) => set({ rightPanelWidth: Math.max(240, Math.min(640, w)) }),

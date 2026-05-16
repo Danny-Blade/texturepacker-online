@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { getTranslations } from '@/lib/i18n';
 import { useTpStore, type BackgroundMode, type InspectorSectionState } from '@/lib/store';
-import type { ExportFormat, PackingAlgorithm } from '@/lib/packer';
+import { summarizeSelection } from '@/lib/spriteTree';
+import type { ExportFormat, ImageItem, PackedItem, PackingAlgorithm } from '@/lib/packer';
 
 interface InspectorProps {
   locale: 'en' | 'zh';
@@ -164,6 +165,338 @@ function BgSegmented({ value, onChange, labels }: BgSegmentedProps) {
   );
 }
 
+function humanizePixels(n: number): string {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)} MP`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)} KP`;
+  return `${n} px`;
+}
+
+function splitFolderBase(name: string): { folder: string; base: string } {
+  const idx = name.lastIndexOf('/');
+  if (idx < 0) return { folder: '', base: name };
+  return { folder: name.slice(0, idx), base: name.slice(idx + 1) };
+}
+
+function formatTemplate(template: string, vars: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ''));
+}
+
+function PencilIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+    </svg>
+  );
+}
+
+interface KvRowProps {
+  label: string;
+  children: React.ReactNode;
+}
+
+function KvRow({ label, children }: KvRowProps) {
+  return (
+    <div className="flex items-baseline justify-between gap-2">
+      <div className="tp-label">{label}</div>
+      <div className="text-right text-xs font-mono text-[var(--tp-text)]">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+interface SpriteDetailProps {
+  sprite: ImageItem;
+  packed: PackedItem | undefined;
+  failed: boolean;
+  isRenaming: boolean;
+  labels: {
+    spriteName: string;
+    sourceSize: string;
+    pixels: string;
+    packFrame: string;
+    rotated: string;
+    rotatedYes: string;
+    rotatedNo: string;
+    placement: string;
+    placementPacked: string;
+    placementFailed: string;
+    placementNone: string;
+    trimmed: string;
+    trimmedOff: string;
+    actionRename: string;
+    actionRemove: string;
+    rootFolder: string;
+  };
+}
+
+function RenameInput({
+  sprite,
+}: {
+  sprite: ImageItem;
+}) {
+  const startRename = useTpStore((s) => s.startRename);
+  const renameImage = useTpStore((s) => s.renameImage);
+  const [draft, setDraft] = useState(sprite.name);
+
+  const onInputMount = useCallback((el: HTMLInputElement | null) => {
+    if (el) {
+      el.focus();
+      el.select();
+    }
+  }, []);
+
+  const commit = useCallback(() => {
+    const trimmed = draft.trim();
+    if (!trimmed) {
+      startRename(null);
+      return;
+    }
+    if (trimmed !== sprite.name) {
+      renameImage(sprite.id, trimmed);
+    } else {
+      startRename(null);
+    }
+  }, [draft, renameImage, sprite.id, sprite.name, startRename]);
+
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commit();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        startRename(null);
+      }
+    },
+    [commit, startRename],
+  );
+
+  return (
+    <input
+      ref={onInputMount}
+      type="text"
+      className="tp-input"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onKeyDown={onKeyDown}
+      onBlur={commit}
+    />
+  );
+}
+
+function SpriteDetail({
+  sprite,
+  packed,
+  failed,
+  isRenaming,
+  labels,
+}: SpriteDetailProps) {
+  const startRename = useTpStore((s) => s.startRename);
+  const removeImages = useTpStore((s) => s.removeImages);
+  const { folder, base } = splitFolderBase(sprite.name);
+
+  const frameW = packed ? (packed.rotated ? packed.height : packed.width) : 0;
+  const frameH = packed ? (packed.rotated ? packed.width : packed.height) : 0;
+
+  let placementLabel = labels.placementNone;
+  let placementClass = 'text-[var(--tp-text-muted)]';
+  if (packed) {
+    placementLabel = labels.placementPacked;
+    placementClass = 'text-[var(--tp-success)]';
+  } else if (failed) {
+    placementLabel = labels.placementFailed;
+    placementClass = 'text-[var(--tp-danger)]';
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-3">
+        <div className="h-16 w-16 shrink-0 overflow-hidden rounded-sm border border-[var(--tp-border)] bg-[var(--tp-bg)]">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={sprite.url}
+            alt={base}
+            className="h-full w-full object-contain"
+          />
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          {isRenaming ? (
+            <RenameInput sprite={sprite} />
+          ) : (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => startRename(sprite.id)}
+                className="min-w-0 flex-1 truncate text-left text-xs text-[var(--tp-text)] hover:text-[var(--tp-accent)]"
+                title={labels.actionRename}
+              >
+                {base}
+              </button>
+              <button
+                type="button"
+                onClick={() => startRename(sprite.id)}
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--tp-text-muted)] hover:bg-[var(--tp-panel-2)] hover:text-[var(--tp-accent)]"
+                title={labels.actionRename}
+                aria-label={labels.actionRename}
+              >
+                <PencilIcon />
+              </button>
+            </div>
+          )}
+          {folder && (
+            <div className="truncate font-mono text-[10px] text-[var(--tp-text-dim)]">
+              {folder}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <KvRow label={labels.sourceSize}>
+          {sprite.width} × {sprite.height}
+        </KvRow>
+        <KvRow label={labels.pixels}>
+          {humanizePixels(sprite.width * sprite.height)}
+        </KvRow>
+        <KvRow label={labels.packFrame}>
+          {packed ? (
+            <>
+              {packed.x}, {packed.y}
+              <span className="text-[var(--tp-text-muted)]">
+                {' · '}
+                {frameW} × {frameH}
+              </span>
+            </>
+          ) : (
+            <span className="text-[var(--tp-text-muted)]">—</span>
+          )}
+        </KvRow>
+        <KvRow label={labels.rotated}>
+          {packed && packed.rotated ? (
+            <span className="text-[var(--tp-accent)]">{labels.rotatedYes}</span>
+          ) : (
+            <span className="text-[var(--tp-text-muted)]">{labels.rotatedNo}</span>
+          )}
+        </KvRow>
+        <KvRow label={labels.placement}>
+          <span className={placementClass}>{placementLabel}</span>
+        </KvRow>
+        <KvRow label={labels.trimmed}>
+          <span className="text-[var(--tp-text-muted)]">{labels.trimmedOff}</span>
+        </KvRow>
+      </div>
+
+      <div className="flex gap-2">
+        <button
+          type="button"
+          className="tp-btn flex-1"
+          onClick={() => startRename(sprite.id)}
+        >
+          {labels.actionRename}
+        </button>
+        <button
+          type="button"
+          className="tp-btn flex-1"
+          onClick={() => removeImages([sprite.id])}
+        >
+          {labels.actionRemove}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+interface SpritesSummaryProps {
+  count: number;
+  totalPixels: number;
+  minW: number;
+  minH: number;
+  maxW: number;
+  maxH: number;
+  paths: string[];
+  onSelectInverse: () => void;
+  onRemoveAll: () => void;
+  labels: {
+    spritesSelected: string;
+    totalPixels: string;
+    minSize: string;
+    maxSize2: string;
+    folders: string;
+    foldersCount: string;
+    rootFolder: string;
+    actionSelectInverse: string;
+    actionRemoveAll: string;
+  };
+}
+
+function SpritesSummary({
+  count,
+  totalPixels,
+  minW,
+  minH,
+  maxW,
+  maxH,
+  paths,
+  onSelectInverse,
+  onRemoveAll,
+  labels,
+}: SpritesSummaryProps) {
+  return (
+    <div className="space-y-3">
+      <div className="text-xs font-medium text-[var(--tp-text)]">
+        {formatTemplate(labels.spritesSelected, { n: count })}
+      </div>
+      <div className="space-y-1.5">
+        <KvRow label={labels.totalPixels}>{humanizePixels(totalPixels)}</KvRow>
+        <KvRow label={labels.minSize}>
+          {minW} × {minH}
+        </KvRow>
+        <KvRow label={labels.maxSize2}>
+          {maxW} × {maxH}
+        </KvRow>
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="tp-label">{labels.folders}</div>
+          {paths.length <= 3 ? (
+            <div className="flex flex-wrap justify-end gap-1">
+              {paths.map((p) => (
+                <span
+                  key={p}
+                  className="rounded-sm bg-[var(--tp-bg-elev)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--tp-text-muted)]"
+                >
+                  {p === '' ? labels.rootFolder : p}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="text-right text-xs font-mono text-[var(--tp-text)]">
+              {formatTemplate(labels.foldersCount, { n: paths.length })}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <button type="button" className="tp-btn flex-1" onClick={onSelectInverse}>
+          {labels.actionSelectInverse}
+        </button>
+        <button type="button" className="tp-btn flex-1" onClick={onRemoveAll}>
+          {labels.actionRemoveAll}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function Inspector({ locale }: InspectorProps) {
   const t = getTranslations(locale);
 
@@ -180,9 +513,53 @@ export default function Inspector({ locale }: InspectorProps) {
   const setBgColor = useTpStore((s) => s.setBgColor);
   const images = useTpStore((s) => s.images);
   const packResult = useTpStore((s) => s.packResult);
+  const selectedIds = useTpStore((s) => s.selectedIds);
+  const renamingId = useTpStore((s) => s.renamingId);
+  const selectImages = useTpStore((s) => s.selectImages);
+  const removeImages = useTpStore((s) => s.removeImages);
+
+  const selected = useMemo(() => {
+    const set = new Set(selectedIds);
+    return images.filter((i) => set.has(i.id));
+  }, [images, selectedIds]);
+
+  const selectedSummary = useMemo(
+    () => (selected.length > 1 ? summarizeSelection(images, selectedIds) : null),
+    [images, selectedIds, selected.length],
+  );
+
+  const packedMap = useMemo(() => {
+    const m = new Map<string, PackedItem>();
+    if (packResult) {
+      for (const p of packResult.packed) m.set(p.id, p);
+    }
+    return m;
+  }, [packResult]);
+
+  const failedSet = useMemo(() => {
+    const s = new Set<string>();
+    if (packResult) {
+      for (const f of packResult.failed) s.add(f.id);
+    }
+    return s;
+  }, [packResult]);
 
   const dataExt = FORMAT_EXT[exportFormat];
   const dataFileName = `${fileName}.${dataExt}`;
+
+  const onSelectInverse = useCallback(() => {
+    const sel = new Set(selectedIds);
+    selectImages(images.filter((i) => !sel.has(i.id)).map((i) => i.id));
+  }, [images, selectedIds, selectImages]);
+
+  const onRemoveAllSelected = useCallback(() => {
+    const n = selectedIds.length;
+    if (n === 0) return;
+    const msg = formatTemplate(t.inspector.confirmRemoveN, { n });
+    if (typeof window !== 'undefined' && window.confirm(msg)) {
+      removeImages(selectedIds);
+    }
+  }, [removeImages, selectedIds, t.inspector.confirmRemoveN]);
 
   const onAlgorithmChange = useCallback(
     (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -404,6 +781,68 @@ export default function Inspector({ locale }: InspectorProps) {
             </div>
           )}
         </div>
+      </Section>
+
+      <Section
+        title={t.inspector.sprites}
+        sectionKey="sprites"
+        open={sections.sprites}
+      >
+        {selected.length === 0 && (
+          <div className="text-xs text-[var(--tp-text-muted)]">
+            {t.inspector.selectDetail}
+          </div>
+        )}
+        {selected.length === 1 && (
+          <SpriteDetail
+            sprite={selected[0]}
+            packed={packedMap.get(selected[0].id)}
+            failed={failedSet.has(selected[0].id)}
+            isRenaming={renamingId === selected[0].id}
+            labels={{
+              spriteName: t.inspector.spriteName,
+              sourceSize: t.inspector.sourceSize,
+              pixels: t.inspector.pixels,
+              packFrame: t.inspector.packFrame,
+              rotated: t.inspector.rotated,
+              rotatedYes: t.inspector.rotatedYes,
+              rotatedNo: t.inspector.rotatedNo,
+              placement: t.inspector.placement,
+              placementPacked: t.inspector.placementPacked,
+              placementFailed: t.inspector.placementFailed,
+              placementNone: t.inspector.placementNone,
+              trimmed: t.inspector.trimmed,
+              trimmedOff: t.inspector.trimmedOff,
+              actionRename: t.inspector.actionRename,
+              actionRemove: t.inspector.actionRemove,
+              rootFolder: t.inspector.rootFolder,
+            }}
+          />
+        )}
+        {selected.length > 1 && selectedSummary && (
+          <SpritesSummary
+            count={selectedSummary.count}
+            totalPixels={selectedSummary.totalPixels}
+            minW={selectedSummary.minW}
+            minH={selectedSummary.minH}
+            maxW={selectedSummary.maxW}
+            maxH={selectedSummary.maxH}
+            paths={selectedSummary.paths}
+            onSelectInverse={onSelectInverse}
+            onRemoveAll={onRemoveAllSelected}
+            labels={{
+              spritesSelected: t.inspector.spritesSelected,
+              totalPixels: t.inspector.totalPixels,
+              minSize: t.inspector.minSize,
+              maxSize2: t.inspector.maxSize2,
+              folders: t.inspector.folders,
+              foldersCount: t.inspector.foldersCount,
+              rootFolder: t.inspector.rootFolder,
+              actionSelectInverse: t.inspector.actionSelectInverse,
+              actionRemoveAll: t.inspector.actionRemoveAll,
+            }}
+          />
+        )}
       </Section>
 
       {images.length === 0 && !packResult && (
