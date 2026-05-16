@@ -1177,6 +1177,34 @@ export default function Inspector({ locale }: InspectorProps) {
       </Section>
 
       <Section
+        title={t.inspector.effects}
+        sectionKey="effects"
+        open={sections.effects}
+      >
+        <EffectsControls
+          effects={settings.effects}
+          setEffects={(next) => setSettings({ effects: next })}
+          labels={{
+            outline: t.inspector.outline,
+            outlineWidth: t.inspector.outlineWidth,
+            outlineColor: t.inspector.outlineColor,
+            dropShadow: t.inspector.dropShadow,
+            shadowOffset: t.inspector.shadowOffset,
+            shadowBlur: t.inspector.shadowBlur,
+            shadowColor: t.inspector.shadowColor,
+            shadowOpacity: t.inspector.shadowOpacity,
+            tint: t.inspector.tint,
+            tintMode: t.inspector.tintMode,
+            tintMultiply: t.inspector.tintMultiply,
+            tintOverlay: t.inspector.tintOverlay,
+            tintScreen: t.inspector.tintScreen,
+            tintColor: t.inspector.tintColor,
+            tintOpacity: t.inspector.tintOpacity,
+          }}
+        />
+      </Section>
+
+      <Section
         title={t.inspector.sprites}
         sectionKey="sprites"
         open={sections.sprites}
