@@ -12,6 +12,7 @@ import {
   packIntoSheets,
 } from './packer';
 import { prepareSpriteForAtlas } from './imageProcessing';
+import { packAsync, type PackJob } from './packerClient';
 
 export type ThemeMode = 'dark' | 'light';
 
@@ -19,7 +20,17 @@ export type BackgroundMode = 'checker' | 'solid' | 'transparent';
 
 export type SortMode = 'manual' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc';
 
-export type ImageFileFormat = 'png' | 'jpg' | 'webp';
+export type ImageFileFormat = 'png' | 'png-8' | 'jpg' | 'webp';
+
+export interface SmartFolder {
+  id: string;
+  /** Display label (folder name). */
+  name: string;
+  /** Last known sprite id list (so we can diff against the live directory). */
+  trackedIds: string[];
+  /** Last poll timestamp. */
+  lastSync: number;
+}
 
 export interface PublishOptions {
   imageFormat: ImageFileFormat;
@@ -34,6 +45,7 @@ export interface InspectorSectionState {
   output: boolean;
   data: boolean;
   layout: boolean;
+  effects: boolean;
   sprites: boolean;
 }
 
@@ -71,6 +83,14 @@ export interface TexturePackerState {
   sortMode: SortMode;
   collapsedFolders: string[]; // serialisable; convert to Set in selectors when needed
   renamingId: string | null;
+
+  // async packing
+  isPacking: boolean;
+  packProgress: number; // 0..1
+  packError: string | null;
+
+  // smart folders (watched directories)
+  smartFolders: SmartFolder[];
 
   // derived (cached)
   packResult: PackResult | null;
@@ -124,6 +144,15 @@ export interface TexturePackerState {
 
   // packing
   repack: () => void;
+  /** Set isPacking/progress externally (the worker driver calls this). */
+  setPackProgress: (progress: number, isPacking?: boolean) => void;
+  setPackError: (e: string | null) => void;
+  setPackResult: (r: PackResult | null) => void;
+
+  // smart folders
+  addSmartFolder: (folder: SmartFolder) => void;
+  removeSmartFolder: (id: string) => void;
+  updateSmartFolder: (id: string, patch: Partial<SmartFolder>) => void;
 }
 
 const initialSettings: PackerOptions = {
@@ -138,6 +167,8 @@ const initialSettings: PackerOptions = {
   algorithm: 'maxrects-bssf',
   trimAlpha: false,
   trimThreshold: 1,
+  trimMode: 'rect',
+  polygonTolerance: 2,
   extrude: 0,
   multipack: false,
 };
@@ -151,9 +182,78 @@ const initialPublishOptions: PublishOptions = {
   bundleZip: false,
 };
 
-function runPack(images: ImageItem[], settings: PackerOptions): PackResult | null {
+function runPackSync(images: ImageItem[], settings: PackerOptions): PackResult | null {
   if (images.length === 0) return null;
   return packIntoSheets(images, settings, prepareSpriteForAtlas);
+}
+
+let currentJob: PackJob | null = null;
+
+function triggerPack(): void {
+  const s = useTpStore.getState();
+  if (s.images.length === 0) {
+    if (currentJob) {
+      currentJob.cancel();
+      currentJob = null;
+    }
+    useTpStore.setState({
+      packResult: null,
+      isPacking: false,
+      packProgress: 0,
+      packError: null,
+    });
+    return;
+  }
+
+  if (typeof window === 'undefined') {
+    const result = runPackSync(s.images, s.settings);
+    useTpStore.setState({
+      packResult: result,
+      isPacking: false,
+      packProgress: result ? 1 : 0,
+      packError: null,
+    });
+    return;
+  }
+
+  if (currentJob) {
+    currentJob.cancel();
+    currentJob = null;
+  }
+  useTpStore.setState({ isPacking: true, packProgress: 0, packError: null });
+  const job = packAsync(s.images, s.settings, (p) => {
+    if (currentJob === job) {
+      useTpStore.getState().setPackProgress(p);
+    }
+  });
+  currentJob = job;
+  job.promise
+    .then((r) => {
+      if (currentJob === job) {
+        useTpStore.getState().setPackResult(r);
+        currentJob = null;
+      }
+    })
+    .catch((err: unknown) => {
+      if (currentJob !== job) return;
+      const message = err instanceof Error ? err.message : String(err);
+      if (message === 'cancelled') {
+        return;
+      }
+      useTpStore.getState().setPackError(message);
+      useTpStore.setState({ isPacking: false, packProgress: 0 });
+      currentJob = null;
+    });
+}
+
+function schedulePack(): void {
+  if (typeof queueMicrotask === 'function') {
+    queueMicrotask(triggerPack);
+  } else if (typeof window !== 'undefined') {
+    window.setTimeout(triggerPack, 0);
+  } else {
+    triggerPack();
+  }
 }
 
 export const useTpStore = create<TexturePackerState>((set, get) => ({
@@ -180,6 +280,7 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
     output: true,
     data: true,
     layout: true,
+    effects: false,
     sprites: true,
   },
   leftPanelWidth: 280,
@@ -190,23 +291,43 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
   collapsedFolders: [],
   renamingId: null,
 
+  isPacking: false,
+  packProgress: 0,
+  packError: null,
+
+  smartFolders: [],
+
   packResult: null,
 
-  addImages: (items) =>
-    set((s) => {
-      const images = [...s.images, ...items];
-      return { images, packResult: runPack(images, s.settings) };
-    }),
+  addImages: (items) => {
+    set((s) => ({ images: [...s.images, ...items] }));
+    schedulePack();
+  },
 
-  removeImages: (ids) =>
+  removeImages: (ids) => {
     set((s) => {
       const idSet = new Set(ids);
       const images = s.images.filter((i) => !idSet.has(i.id));
       const selectedIds = s.selectedIds.filter((id) => !idSet.has(id));
-      return { images, selectedIds, packResult: runPack(images, s.settings) };
-    }),
+      return { images, selectedIds };
+    });
+    schedulePack();
+  },
 
-  clearImages: () => set({ images: [], selectedIds: [], packResult: null }),
+  clearImages: () => {
+    if (currentJob) {
+      currentJob.cancel();
+      currentJob = null;
+    }
+    set({
+      images: [],
+      selectedIds: [],
+      packResult: null,
+      isPacking: false,
+      packProgress: 0,
+      packError: null,
+    });
+  },
 
   selectImages: (ids) => set({ selectedIds: ids }),
 
@@ -221,7 +342,7 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
       };
     }),
 
-  reorderImages: (fromIds, beforeId) =>
+  reorderImages: (fromIds, beforeId) => {
     set((s) => {
       const moving = s.images.filter((i) => fromIds.includes(i.id));
       const rest = s.images.filter((i) => !fromIds.includes(i.id));
@@ -231,10 +352,13 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
         if (idx >= 0) insertAt = idx;
       }
       const images = [...rest.slice(0, insertAt), ...moving, ...rest.slice(insertAt)];
-      return { images, packResult: runPack(images, s.settings) };
-    }),
+      return { images };
+    });
+    schedulePack();
+  },
 
-  reorderImagesInto: (fromIds, folderPath, beforeId) =>
+  reorderImagesInto: (fromIds, folderPath, beforeId) => {
+    let changed = false;
     set((s) => {
       const moving = s.images.filter((i) => fromIds.includes(i.id));
       if (moving.length === 0) return {};
@@ -249,7 +373,6 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
         const idx = rest.findIndex((i) => i.id === beforeId);
         if (idx >= 0) insertAt = idx;
       } else if (folderPath) {
-        // append at end of target folder block
         const lastIdx = rest.reduce((acc, img, idx) => {
           const dir = img.name.includes('/') ? img.name.slice(0, img.name.lastIndexOf('/')) : '';
           return dir === folderPath || dir.startsWith(`${folderPath}/`) ? idx : acc;
@@ -257,8 +380,11 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
         if (lastIdx >= 0) insertAt = lastIdx + 1;
       }
       const images = [...rest.slice(0, insertAt), ...reparented, ...rest.slice(insertAt)];
-      return { images, packResult: runPack(images, s.settings) };
-    }),
+      changed = true;
+      return { images };
+    });
+    if (changed) schedulePack();
+  },
 
   renameImage: (id, newName) =>
     set((s) => {
@@ -270,11 +396,10 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
 
   startRename: (id) => set({ renamingId: id }),
 
-  setSettings: (patch) =>
-    set((s) => {
-      const settings = { ...s.settings, ...patch };
-      return { settings, packResult: runPack(s.images, settings) };
-    }),
+  setSettings: (patch) => {
+    set((s) => ({ settings: { ...s.settings, ...patch } }));
+    schedulePack();
+  },
 
   setExportFormat: (fmt) => set({ exportFormat: fmt }),
   setFileName: (name) => set({ fileName: name }),
@@ -340,7 +465,26 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
     }
   },
 
-  repack: () => set((s) => ({ packResult: runPack(s.images, s.settings) })),
+  repack: () => {
+    schedulePack();
+  },
+
+  setPackProgress: (progress, isPacking) =>
+    set((s) => ({
+      packProgress: Math.max(0, Math.min(1, progress)),
+      isPacking: typeof isPacking === 'boolean' ? isPacking : s.isPacking,
+    })),
+  setPackError: (e) => set({ packError: e }),
+  setPackResult: (r) => set({ packResult: r, isPacking: false, packProgress: 1 }),
+
+  addSmartFolder: (folder) =>
+    set((s) => ({ smartFolders: [...s.smartFolders.filter((f) => f.id !== folder.id), folder] })),
+  removeSmartFolder: (id) =>
+    set((s) => ({ smartFolders: s.smartFolders.filter((f) => f.id !== id) })),
+  updateSmartFolder: (id, patch) =>
+    set((s) => ({
+      smartFolders: s.smartFolders.map((f) => (f.id === id ? { ...f, ...patch } : f)),
+    })),
 }));
 
 export function selectEfficiency(s: TexturePackerState): number {

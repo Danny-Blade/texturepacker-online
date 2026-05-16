@@ -8,7 +8,7 @@ const pixi: FormatGenerator = {
     for (const item of sheet.packed) {
       const fw = item.rotated ? item.height : item.width;
       const fh = item.rotated ? item.width : item.height;
-      frames[item.name] = {
+      const frame: Record<string, unknown> = {
         frame: { x: item.x, y: item.y, w: fw, h: fh },
         rotated: item.rotated,
         trimmed: item.trimmed,
@@ -20,6 +20,10 @@ const pixi: FormatGenerator = {
         },
         sourceSize: { w: item.sourceSize.w, h: item.sourceSize.h },
       };
+      if (item.polygon && item.polygon.length >= 6) {
+        frame.polygon = item.polygon.slice();
+      }
+      frames[item.name] = frame;
     }
     const data = {
       frames,

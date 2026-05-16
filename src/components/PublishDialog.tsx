@@ -73,7 +73,7 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
     setPublishOptions({ scales: next });
   };
 
-  const setImageFormat = (fmt: 'png' | 'jpg' | 'webp') => {
+  const setImageFormat = (fmt: 'png' | 'png-8' | 'jpg' | 'webp') => {
     setPublishOptions({ imageFormat: fmt });
   };
 
@@ -121,13 +121,15 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
     .replace('{scales}', String(scaleCount))
     .replace('{files}', String(fileCount));
 
-  const formatChoices: Array<{ key: 'png' | 'jpg' | 'webp'; label: string }> = [
+  const formatChoices: Array<{ key: 'png' | 'png-8' | 'jpg' | 'webp'; label: string }> = [
     { key: 'png', label: 'PNG' },
+    { key: 'png-8', label: t.publish.png8 },
     { key: 'jpg', label: 'JPG' },
     { key: 'webp', label: 'WEBP' },
   ];
 
-  const qualityDisabled = publishOptions.imageFormat === 'png';
+  const qualityDisabled =
+    publishOptions.imageFormat === 'png' || publishOptions.imageFormat === 'png-8';
 
   return (
     <div
@@ -218,6 +220,11 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
                 </button>
               ))}
             </div>
+            {publishOptions.imageFormat === 'png-8' && (
+              <p className="mt-1 text-[10px] text-[var(--tp-text-dim)]">
+                {t.publish.png8Hint}
+              </p>
+            )}
             <div className={`mt-3 ${qualityDisabled ? 'opacity-50' : ''}`}>
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[11px] text-[var(--tp-text-muted)]">{t.publish.imageQuality}</span>

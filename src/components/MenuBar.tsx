@@ -12,6 +12,7 @@ interface MenuBarProps {
   onSaveProjectAs?: () => void;
   onAddSprites?: () => void;
   onAddFolder?: () => void;
+  onWatchFolder?: () => void;
   onPublish?: () => void;
   onShowShortcuts?: () => void;
 }
@@ -35,6 +36,7 @@ export default function MenuBar({
   onSaveProjectAs,
   onAddSprites,
   onAddFolder,
+  onWatchFolder,
   onPublish,
   onShowShortcuts,
 }: MenuBarProps) {
@@ -140,6 +142,12 @@ export default function MenuBar({
           key: 'addFolder',
           label: t.menu.addFolder,
           onClick: fallback(onAddFolder, 'Add folder: not yet wired in Phase 1'),
+        },
+        {
+          key: 'watchFolder',
+          label: t.smartFolder.watchFolder,
+          shortcut: 'Ctrl+Shift+W',
+          onClick: fallback(onWatchFolder, t.smartFolder.notSupported),
           separatorAfter: true,
         },
         {

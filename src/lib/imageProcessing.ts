@@ -1,6 +1,22 @@
-import type { ImageItem, PreparedSprite, PackerOptions, TrimInfo } from './packer';
+import type { ImageItem, PreparedSprite, PackerOptions, SpriteEffects, TrimInfo, SpritePolygon } from './packer';
+import { computePolygonOutline, offsetPolygon } from './polygonTrim';
+import { applySpriteEffects } from './spriteEffects';
 
 type TrimBounds = { x: number; y: number; w: number; h: number };
+
+function effectsKey(effects?: SpriteEffects): string {
+  if (!effects || (!effects.outline && !effects.dropShadow && !effects.tint)) return '';
+  return JSON.stringify({
+    o: effects.outline ?? null,
+    s: effects.dropShadow ?? null,
+    t: effects.tint ?? null,
+  });
+}
+
+function hasAnyEffect(effects?: SpriteEffects): boolean {
+  if (!effects) return false;
+  return Boolean(effects.outline || effects.dropShadow || effects.tint);
+}
 
 const TRIM_CACHE_LIMIT = 256;
 const PREPARED_CACHE_LIMIT = 256;
@@ -188,7 +204,13 @@ function makeTransparent1x1(): HTMLCanvasElement {
 export function prepareSpriteForAtlas(item: ImageItem, options: PackerOptions): PreparedSprite {
   const ex = Math.max(0, Math.floor(options.extrude ?? 0));
   const threshold = Math.max(0, Math.min(255, Math.floor(options.trimThreshold ?? 1)));
-  const cacheKey = `${item.image.src}|t:${options.trimAlpha ? 1 : 0}|th:${threshold}|ex:${ex}`;
+  const trimMode = options.trimMode ?? (options.trimAlpha ? 'rect' : 'none');
+  // Polygon mode implies alpha trim. None disables trim.
+  const effectiveTrim = trimMode !== 'none';
+  const polyTol = Math.max(0, Number(options.polygonTolerance ?? 2));
+  const wantPolygon = trimMode === 'polygon';
+  const fxKey = effectsKey(options.effects);
+  const cacheKey = `${item.image.src}|t:${effectiveTrim ? 1 : 0}|th:${threshold}|ex:${ex}|tm:${trimMode}|pt:${wantPolygon ? polyTol : 0}|fx:${fxKey}`;
   const cached = preparedCache.get(cacheKey);
   if (cached) {
     if (cached.item === item) return cached;
@@ -208,7 +230,7 @@ export function prepareSpriteForAtlas(item: ImageItem, options: PackerOptions): 
   let trimmed = false;
   let fullyEmpty = false;
 
-  if (options.trimAlpha) {
+  if (effectiveTrim) {
     const bounds = computeTrimBounds(item.image, threshold);
     if (bounds === null) {
       fullyEmpty = true;
@@ -250,13 +272,63 @@ export function prepareSpriteForAtlas(item: ImageItem, options: PackerOptions): 
     pixelSource = item.image;
   }
 
+  let polygon: SpritePolygon | undefined;
+  if (wantPolygon && !fullyEmpty) {
+    const raw = computePolygonOutline(item.image, threshold, polyTol);
+    if (raw && raw.length >= 6) {
+      // Translate to trimmed-sprite coordinates (relative to trimmed top-left).
+      polygon = offsetPolygon(raw, sx, sy);
+    }
+  }
+
+  // Apply sprite effects (outline / drop-shadow / tint) on top of the
+  // trimmed+extruded bitmap. Effects can expand the bitmap asymmetrically; we
+  // re-center it into a symmetric (max-padded) canvas so downstream code that
+  // assumes a symmetric `extrudePadding` halo (publish render, packer) keeps
+  // working. The packer reserves `2*extrudePadding` extra room around each
+  // sprite — slightly more than the strict asymmetric extent, but correct.
+  let effectExtrudeExtra = 0;
+  if (!fullyEmpty && hasAnyEffect(options.effects)) {
+    const innerW = sw + ex * 2;
+    const innerH = sh + ex * 2;
+    const applied = applySpriteEffects(pixelSource, innerW, innerH, options.effects);
+    if (applied.canvas !== pixelSource) {
+      const ext = applied.expand;
+      const pad = Math.max(ext.left, ext.top, ext.right, ext.bottom);
+      effectExtrudeExtra = pad;
+      if (pad > 0) {
+        // Re-center the asymmetric effect canvas into a symmetric (pad)-bordered canvas.
+        const symW = innerW + pad * 2;
+        const symH = innerH + pad * 2;
+        const symCanvas = document.createElement('canvas');
+        symCanvas.width = symW;
+        symCanvas.height = symH;
+        const sctx = symCanvas.getContext('2d');
+        if (sctx) {
+          // Effect canvas's sprite-origin is at (ext.left, ext.top); we want it
+          // at (pad, pad) in the symmetric canvas.
+          const dx = pad - ext.left;
+          const dy = pad - ext.top;
+          sctx.drawImage(applied.canvas, dx, dy);
+          pixelSource = symCanvas;
+        } else {
+          pixelSource = applied.canvas;
+        }
+      } else {
+        pixelSource = applied.canvas;
+      }
+    }
+  }
+  const totalExtrude = ex + effectExtrudeExtra;
+
   const prepared: PreparedSprite = {
     item,
     trim,
     pixelSource,
     width: sw,
     height: sh,
-    extrudePadding: ex > 0 ? ex : undefined,
+    extrudePadding: totalExtrude > 0 ? totalExtrude : undefined,
+    polygon,
   };
   fifoSet(preparedCache, cacheKey, prepared, PREPARED_CACHE_LIMIT);
   return prepared;

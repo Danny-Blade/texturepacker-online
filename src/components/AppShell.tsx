@@ -12,6 +12,14 @@ import StatusBar from './StatusBar';
 import PublishDialog from './PublishDialog';
 import ShortcutsDialog from './ShortcutsDialog';
 import { parseTpsPlist } from '@/lib/tpsCompat';
+import {
+  createSmartFolderManager,
+  isFileSystemAccessSupported,
+  scanDirectory,
+  WATCH_FOLDER_EVENT,
+  type SmartFolderManager,
+  type WatchedFolder,
+} from '@/lib/smartFolder';
 
 interface AppShellProps {
   locale: Locale;
@@ -168,6 +176,158 @@ export default function AppShell({ locale }: AppShellProps) {
 
   const handleAddSprites = useCallback(() => addSpritesInputRef.current?.click(), []);
   const handleAddFolder = useCallback(() => addFolderInputRef.current?.click(), []);
+
+  const smartFolderManagerRef = useRef<SmartFolderManager | null>(null);
+
+  const loadFilesFromSmartFolder = useCallback(
+    async (folder: WatchedFolder, files: File[], relativePaths: string[]) => {
+      if (files.length === 0) return 0;
+      const loaded: ImageItem[] = [];
+      await Promise.all(
+        files.map(async (f, idx) => {
+          try {
+            const rel = relativePaths[idx];
+            try {
+              Object.defineProperty(f, 'webkitRelativePath', {
+                value: `${folder.name}/${rel}`,
+                configurable: true,
+              });
+            } catch {
+              // ignore
+            }
+            loaded.push(await loadImageFromFile(f));
+          } catch {
+            /* ignore single failure */
+          }
+        }),
+      );
+      if (loaded.length === 0) return 0;
+      const store = useTpStore.getState();
+      store.addImages(loaded);
+      const sf = store.smartFolders.find((f) => f.id === folder.id);
+      const prevIds = sf ? sf.trackedIds : [];
+      store.updateSmartFolder(folder.id, {
+        trackedIds: [...prevIds, ...loaded.map((l) => l.id)],
+        lastSync: Date.now(),
+      });
+      return loaded.length;
+    },
+    [],
+  );
+
+  const ensureSmartFolderManager = useCallback((): SmartFolderManager | null => {
+    if (smartFolderManagerRef.current) return smartFolderManagerRef.current;
+    if (typeof window === 'undefined') return null;
+    const mgr = createSmartFolderManager({
+      onSync: (folder, addedFiles, removedPaths) => {
+        const store = useTpStore.getState();
+        const prefix = `${folder.name}/`;
+        const removedNames = new Set(
+          removedPaths.map((p) => `${prefix}${p}`.replace(/\.[^/.]+$/, '')),
+        );
+        let removedCount = 0;
+        if (removedNames.size > 0) {
+          const removeIds = store.images
+            .filter((img) => removedNames.has(img.name))
+            .map((img) => img.id);
+          if (removeIds.length > 0) {
+            store.removeImages(removeIds);
+            removedCount = removeIds.length;
+            const sf = store.smartFolders.find((f) => f.id === folder.id);
+            if (sf) {
+              const removeSet = new Set(removeIds);
+              store.updateSmartFolder(folder.id, {
+                trackedIds: sf.trackedIds.filter((id) => !removeSet.has(id)),
+              });
+            }
+          }
+        }
+        const finalize = (addedCount: number) => {
+          useTpStore.getState().updateSmartFolder(folder.id, { lastSync: Date.now() });
+          useTpStore
+            .getState()
+            .showNotification(`Smart Folder synced: +${addedCount} -${removedCount}`);
+        };
+        if (addedFiles.length > 0) {
+          const rels = addedFiles.map((f) => {
+            const rp = (f as File & { webkitRelativePath?: string }).webkitRelativePath || '';
+            return rp.startsWith(prefix) ? rp.slice(prefix.length) : f.name;
+          });
+          loadFilesFromSmartFolder(folder, addedFiles, rels).then(finalize);
+        } else {
+          finalize(0);
+        }
+      },
+      onError: (folder, err) => {
+        useTpStore
+          .getState()
+          .showNotification(`Smart Folder error: ${err.message}`);
+        useTpStore.getState().removeSmartFolder(folder.id);
+      },
+    });
+    smartFolderManagerRef.current = mgr;
+    return mgr;
+  }, [loadFilesFromSmartFolder]);
+
+  useEffect(() => {
+    return () => {
+      smartFolderManagerRef.current?.dispose();
+      smartFolderManagerRef.current = null;
+    };
+  }, []);
+
+  const watchDirectoryHandle = useCallback(
+    async (handle: FileSystemDirectoryHandle) => {
+      const mgr = ensureSmartFolderManager();
+      if (!mgr) return;
+      try {
+        const folder = await mgr.watch(handle);
+        useTpStore.getState().addSmartFolder({
+          id: folder.id,
+          name: folder.name,
+          trackedIds: [],
+          lastSync: Date.now(),
+        });
+        const scan = await scanDirectory(handle);
+        const count = await loadFilesFromSmartFolder(folder, scan.files, scan.relativePaths);
+        useTpStore.getState().showNotification(
+          `Watching ${folder.name} (${count} sprite${count === 1 ? '' : 's'})`,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        useTpStore.getState().showNotification(`${t.smartFolder.scanError}: ${msg}`);
+      }
+    },
+    [ensureSmartFolderManager, loadFilesFromSmartFolder, t.smartFolder.scanError],
+  );
+
+  const handleWatchFolder = useCallback(async () => {
+    if (!isFileSystemAccessSupported()) {
+      useTpStore.getState().showNotification(t.smartFolder.notSupported);
+      return;
+    }
+    interface WindowWithPicker {
+      showDirectoryPicker: (options?: unknown) => Promise<FileSystemDirectoryHandle>;
+    }
+    try {
+      const w = window as unknown as WindowWithPicker;
+      const handle = await w.showDirectoryPicker();
+      await watchDirectoryHandle(handle);
+    } catch {
+      /* user cancelled */
+    }
+  }, [t.smartFolder.notSupported, watchDirectoryHandle]);
+
+  useEffect(() => {
+    const onEvent = (e: Event) => {
+      const detail = (e as CustomEvent<{ handle: FileSystemDirectoryHandle }>).detail;
+      if (detail && detail.handle) {
+        void watchDirectoryHandle(detail.handle);
+      }
+    };
+    window.addEventListener(WATCH_FOLDER_EVENT, onEvent);
+    return () => window.removeEventListener(WATCH_FOLDER_EVENT, onEvent);
+  }, [watchDirectoryHandle]);
 
   const triggerDownload = useCallback((filename: string, blob: Blob) => {
     const url = URL.createObjectURL(blob);
@@ -413,6 +573,7 @@ export default function AppShell({ locale }: AppShellProps) {
     onSaveProjectAs: handleSaveProject,
     onAddSprites: handleAddSprites,
     onAddFolder: handleAddFolder,
+    onWatchFolder: handleWatchFolder,
     onPublish: handlePublish,
     onShowShortcuts: () => setShortcutsOpen(true),
   };

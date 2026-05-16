@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import type { PackResult, PackSheet, PackedItem, ExportFormat } from './packer';
 import { getFormat } from './formats';
+import { encodePng8 } from './png8';
 import type { PublishOptions } from './store';
 
 export interface PublishContext {
@@ -45,14 +46,18 @@ export function expandTemplate(template: string, vars: TemplateVars): string {
     .replace('{ext}', vars.ext);
 }
 
-export function imageMimeFor(format: 'png' | 'jpg' | 'webp'): string {
+export type ImageFileFormatLite = 'png' | 'png-8' | 'jpg' | 'webp';
+
+export function imageMimeFor(format: ImageFileFormatLite): string {
   if (format === 'jpg') return 'image/jpeg';
   if (format === 'webp') return 'image/webp';
   return 'image/png';
 }
 
-export function imageExtFor(format: 'png' | 'jpg' | 'webp'): string {
-  return format === 'jpg' ? 'jpg' : format;
+export function imageExtFor(format: ImageFileFormatLite): string {
+  if (format === 'jpg') return 'jpg';
+  if (format === 'png-8') return 'png';
+  return format;
 }
 
 export interface PreviewFilenames {
@@ -104,7 +109,7 @@ export function previewFilenames(ctx: {
 function renderSheetToBlob(
   sheet: PackSheet,
   scale: number,
-  mime: string,
+  format: ImageFileFormatLite,
   quality: number,
 ): Promise<Blob | null> {
   return new Promise((resolve) => {
@@ -132,6 +137,14 @@ function renderSheetToBlob(
       }
       ctx.restore();
     });
+    if (format === 'png-8') {
+      encodePng8(canvas).then(
+        (b) => resolve(b),
+        () => resolve(null),
+      );
+      return;
+    }
+    const mime = imageMimeFor(format);
     if (mime === 'image/png') {
       canvas.toBlob((b) => resolve(b), mime);
     } else {
@@ -190,7 +203,6 @@ export async function performPublish(ctx: PublishContext): Promise<PublishResult
   const scales = publishOptions.scales.length > 0 ? publishOptions.scales : [1];
   const imageExt = imageExtFor(publishOptions.imageFormat);
   const dataExt = getFormat(exportFormat).extension;
-  const mime = imageMimeFor(publishOptions.imageFormat);
   const isSingleSheet = sheets.length <= 1;
 
   const files: PublishedFile[] = [];
@@ -210,7 +222,12 @@ export async function performPublish(ctx: PublishContext): Promise<PublishResult
 
     for (let i = 0; i < sheets.length; i++) {
       const sheet = sheets[i];
-      const imgBlob = await renderSheetToBlob(sheet, scale, mime, publishOptions.imageQuality);
+      const imgBlob = await renderSheetToBlob(
+        sheet,
+        scale,
+        publishOptions.imageFormat,
+        publishOptions.imageQuality,
+      );
       if (imgBlob) {
         files.push({ name: imageNamesForScale[i], blob: imgBlob });
       }

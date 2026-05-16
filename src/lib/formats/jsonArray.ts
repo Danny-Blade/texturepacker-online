@@ -14,19 +14,25 @@ const jsonArray: FormatGenerator = {
         app: 'Web TexturePacker',
         version: '1.0',
       },
-      frames: sheet.packed.map((item) => ({
-        filename: item.name,
-        frame: {
-          x: item.x,
-          y: item.y,
-          w: item.rotated ? item.height : item.width,
-          h: item.rotated ? item.width : item.height,
-        },
-        rotated: item.rotated,
-        trimmed: item.trimmed,
-        spriteSourceSize: item.spriteSourceSize,
-        sourceSize: item.sourceSize,
-      })),
+      frames: sheet.packed.map((item) => {
+        const frame: Record<string, unknown> = {
+          filename: item.name,
+          frame: {
+            x: item.x,
+            y: item.y,
+            w: item.rotated ? item.height : item.width,
+            h: item.rotated ? item.width : item.height,
+          },
+          rotated: item.rotated,
+          trimmed: item.trimmed,
+          spriteSourceSize: item.spriteSourceSize,
+          sourceSize: item.sourceSize,
+        };
+        if (item.polygon && item.polygon.length >= 6) {
+          frame.polygon = item.polygon.slice();
+        }
+        return frame;
+      }),
     };
     return JSON.stringify(data, null, 2);
   },

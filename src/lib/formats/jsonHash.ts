@@ -19,13 +19,17 @@ const jsonHash: FormatGenerator = {
     for (const item of sheet.packed) {
       const fw = item.rotated ? item.height : item.width;
       const fh = item.rotated ? item.width : item.height;
-      data.frames[item.name] = {
+      const frame: Record<string, unknown> = {
         frame: { x: item.x, y: item.y, w: fw, h: fh },
         rotated: item.rotated,
         trimmed: item.trimmed,
         spriteSourceSize: item.spriteSourceSize,
         sourceSize: item.sourceSize,
       };
+      if (item.polygon && item.polygon.length >= 6) {
+        frame.polygon = item.polygon.slice();
+      }
+      data.frames[item.name] = frame;
     }
     return JSON.stringify(data, null, 2);
   },

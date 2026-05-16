@@ -11,19 +11,25 @@ const phaser3: FormatGenerator = {
           format: 'RGBA8888',
           size: { w: sheet.width, h: sheet.height },
           scale: opts.scale ?? 1,
-          frames: sheet.packed.map((item) => ({
-            filename: item.name,
-            rotated: item.rotated,
-            trimmed: item.trimmed,
-            sourceSize: item.sourceSize,
-            spriteSourceSize: item.spriteSourceSize,
-            frame: {
-              x: item.x,
-              y: item.y,
-              w: item.rotated ? item.height : item.width,
-              h: item.rotated ? item.width : item.height,
-            },
-          })),
+          frames: sheet.packed.map((item) => {
+            const frame: Record<string, unknown> = {
+              filename: item.name,
+              rotated: item.rotated,
+              trimmed: item.trimmed,
+              sourceSize: item.sourceSize,
+              spriteSourceSize: item.spriteSourceSize,
+              frame: {
+                x: item.x,
+                y: item.y,
+                w: item.rotated ? item.height : item.width,
+                h: item.rotated ? item.width : item.height,
+              },
+            };
+            if (item.polygon && item.polygon.length >= 6) {
+              frame.polygon = item.polygon.slice();
+            }
+            return frame;
+          }),
         },
       ],
     };

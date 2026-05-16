@@ -24,6 +24,7 @@ import {
   type FolderNode,
   type SpriteNode,
 } from '@/lib/spriteTree';
+import { isFileSystemAccessSupported, requestWatchFolder } from '@/lib/smartFolder';
 
 interface SpritesPanelProps {
   locale: Locale;
@@ -188,6 +189,17 @@ function ancestorPathsOf(folderPath: string): string[] {
   return out;
 }
 
+function formatRelativeTime(timestamp: number, now: number, t: ReturnType<typeof getTranslations>): string {
+  const diffSec = Math.max(0, Math.floor((now - timestamp) / 1000));
+  if (diffSec < 5) return t.smartFolder.syncedJustNow;
+  let label: string;
+  if (diffSec < 60) label = `${diffSec}s`;
+  else if (diffSec < 3600) label = `${Math.floor(diffSec / 60)}m`;
+  else if (diffSec < 86400) label = `${Math.floor(diffSec / 3600)}h`;
+  else label = `${Math.floor(diffSec / 86400)}d`;
+  return t.smartFolder.syncedAgo.replace('{t}', label);
+}
+
 export default function SpritesPanel({ locale }: SpritesPanelProps) {
   const t = getTranslations(locale);
   const images = useTpStore((s) => s.images);
@@ -195,6 +207,7 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
   const sortMode = useTpStore((s) => s.sortMode);
   const collapsedFolders = useTpStore((s) => s.collapsedFolders);
   const renamingId = useTpStore((s) => s.renamingId);
+  const smartFolders = useTpStore((s) => s.smartFolders);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
@@ -209,6 +222,42 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
   const [dragOverTarget, setDragOverTarget] = useState<DragOverTarget>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [hoveredFolder, setHoveredFolder] = useState<string | null>(null);
+  const [watchedMenuOpen, setWatchedMenuOpen] = useState(false);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  const watchedNameMap = useMemo(() => {
+    const map = new Map<string, (typeof smartFolders)[number]>();
+    for (const sf of smartFolders) map.set(sf.name, sf);
+    return map;
+  }, [smartFolders]);
+
+  useEffect(() => {
+    if (smartFolders.length === 0) return;
+    const id = window.setInterval(() => setNowTick(Date.now()), 5000);
+    return () => window.clearInterval(id);
+  }, [smartFolders.length]);
+
+  useEffect(() => {
+    if (!watchedMenuOpen) return;
+    const onDown = () => setWatchedMenuOpen(false);
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setWatchedMenuOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [watchedMenuOpen]);
+
+  const onWatchFolderClick = useCallback(async () => {
+    if (!isFileSystemAccessSupported()) {
+      useTpStore.getState().showNotification(t.smartFolder.notSupported);
+      return;
+    }
+    await requestWatchFolder();
+  }, [t.smartFolder.notSupported]);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const collapsedSet = useMemo(() => new Set(collapsedFolders), [collapsedFolders]);
@@ -852,6 +901,7 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
     const isCollapsed = collapsedSet.has(node.path);
     const indent = 8 + node.depth * 16;
     const isDropTarget = dragOverTarget?.kind === 'folder' && dragOverTarget.id === node.path;
+    const watched = node.depth === 0 ? watchedNameMap.get(node.baseName) : undefined;
     return (
       <div
         key={`folder:${node.path}`}
@@ -901,6 +951,14 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
         <span className="truncate text-[11px] font-medium uppercase tracking-wide text-[var(--tp-text-muted)]">
           {node.baseName}
         </span>
+        {watched && (
+          <span
+            title={formatRelativeTime(watched.lastSync, nowTick, t)}
+            className="rounded-sm bg-[var(--tp-success)] px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white"
+          >
+            {t.smartFolder.badge}
+          </span>
+        )}
         <span className="ml-auto rounded bg-[var(--tp-bg-elev)] px-1.5 text-[10px] leading-4 text-[var(--tp-text-muted)]">
           {node.totalCount}
         </span>
@@ -1045,6 +1103,19 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
           </button>
           <button
             type="button"
+            title={t.smartFolder.watchFolder}
+            aria-label={t.smartFolder.watchFolder}
+            onClick={onWatchFolderClick}
+            className="flex h-5 w-5 items-center justify-center rounded text-[var(--tp-text-muted)] hover:bg-[var(--tp-panel-2)] hover:text-[var(--tp-text)]"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v4" />
+              <path d="M21 17a4 4 0 1 1-1.2-2.8" />
+              <path d="M21 12v3h-3" />
+            </svg>
+          </button>
+          <button
+            type="button"
             title="Expand all"
             aria-label="Expand all folders"
             onClick={() => useTpStore.getState().expandAllFolders()}
@@ -1136,6 +1207,65 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
           </button>
         </div>
       </div>
+
+      {smartFolders.length > 0 && (
+        <div className="relative flex h-6 items-center justify-between border-b border-[var(--tp-border)] bg-[var(--tp-bg-elev)] px-2 text-[10px]">
+          <button
+            type="button"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              setWatchedMenuOpen((v) => !v);
+            }}
+            className="flex items-center gap-1 rounded-sm bg-[var(--tp-success)] px-1.5 py-0.5 text-white"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 6v6l4 2" />
+              <circle cx="12" cy="12" r="9" />
+            </svg>
+            <span>
+              {t.smartFolder.watchedCount.replace('{n}', String(smartFolders.length))}
+            </span>
+            <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M7 10l5 5 5-5z" />
+            </svg>
+          </button>
+          {watchedMenuOpen && (
+            <div
+              role="menu"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              className="absolute left-2 top-6 z-40 min-w-[200px] rounded border border-[var(--tp-border-strong)] bg-[var(--tp-bg-elev)] py-1 text-xs shadow-lg"
+            >
+              {smartFolders.map((sf) => (
+                <div
+                  key={sf.id}
+                  className="flex items-center justify-between gap-2 px-2 py-1.5 hover:bg-[var(--tp-panel-2)]"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[11px] text-[var(--tp-text)]">{sf.name}</div>
+                    <div className="text-[10px] text-[var(--tp-text-muted)]">
+                      {formatRelativeTime(sf.lastSync, nowTick, t)}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    title={t.smartFolder.unwatch}
+                    aria-label={t.smartFolder.unwatch}
+                    onClick={() => useTpStore.getState().removeSmartFolder(sf.id)}
+                    className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--tp-text-muted)] hover:text-[var(--tp-danger)]"
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M18 6L6 18" />
+                      <path d="M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {hasSelection && (
         <div className="flex h-7 items-center justify-between bg-[var(--tp-accent-soft)] px-2 text-xs text-[var(--tp-text)]">

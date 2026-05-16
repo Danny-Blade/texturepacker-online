@@ -14,6 +14,15 @@ export interface TrimInfo {
   spriteSourceSize: { x: number; y: number; w: number; h: number };
 }
 
+/** A flat polygon outline in trimmed-sprite coordinates [x0,y0,x1,y1,...]. */
+export type SpritePolygon = number[];
+
+export interface SpriteEffects {
+  outline?: { width: number; color: string };
+  dropShadow?: { offsetX: number; offsetY: number; blur: number; color: string; opacity: number };
+  tint?: { mode: 'multiply' | 'overlay' | 'screen'; color: string; opacity: number };
+}
+
 export interface PackedItem extends ImageItem {
   x: number;
   y: number;
@@ -25,6 +34,7 @@ export interface PackedItem extends ImageItem {
   spriteSourceSize: { x: number; y: number; w: number; h: number };
   pixelSource?: CanvasImageSource;
   extrudePadding?: number;
+  polygon?: SpritePolygon;
 }
 
 export interface PackSheet {
@@ -59,6 +69,8 @@ export type PackingAlgorithm =
   | 'maxrects-best'
   | 'shelf';
 
+export type TrimMode = 'none' | 'rect' | 'polygon';
+
 export interface PackerOptions {
   maxWidth: number;
   maxHeight: number;
@@ -73,8 +85,13 @@ export interface PackerOptions {
   algorithm: PackingAlgorithm;
   trimAlpha: boolean;
   trimThreshold: number; // 0..255 alpha threshold below which a pixel is "empty"
+  /** 'none' = no trim; 'rect' = axis-aligned trim; 'polygon' = trim + tight polygon outline. */
+  trimMode: TrimMode;
+  /** Tolerance for Douglas-Peucker polygon simplification, in pixels. */
+  polygonTolerance: number;
   extrude: number;
   multipack: boolean;
+  effects?: SpriteEffects;
 }
 
 const HEURISTICS_FOR_BEST: PackingAlgorithm[] = [
@@ -323,6 +340,8 @@ export interface PreparedSprite {
   height: number;
   /** number of extrude pixels surrounding the inner frame in pixelSource. */
   extrudePadding?: number;
+  /** Optional polygon outline in trimmed-sprite coordinates [x0,y0,x1,y1,...] */
+  polygon?: SpritePolygon;
 }
 
 export function defaultPrepareSprite(item: ImageItem): PreparedSprite {
@@ -461,6 +480,7 @@ function packWithAlgorithm(
         // restore the inner trimmed frame dimensions (format generators consume these):
         width: prep.width,
         height: prep.height,
+        polygon: prep.polygon,
       };
     });
 

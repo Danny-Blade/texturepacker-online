@@ -170,6 +170,27 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
         const w = item.rotated ? item.height : item.width;
         const h = item.rotated ? item.width : item.height;
         ctx.strokeRect(item.x + 0.5, item.y + 0.5, w - 1, h - 1);
+
+        if (item.polygon && item.polygon.length >= 6) {
+          ctx.save();
+          if (item.rotated) {
+            ctx.translate(item.x + item.height, item.y);
+            ctx.rotate(Math.PI / 2);
+          } else {
+            ctx.translate(item.x, item.y);
+          }
+          ctx.beginPath();
+          const poly = item.polygon;
+          ctx.moveTo(poly[0], poly[1]);
+          for (let i = 2; i < poly.length; i += 2) {
+            ctx.lineTo(poly[i], poly[i + 1]);
+          }
+          ctx.closePath();
+          ctx.strokeStyle = 'rgba(16, 185, 129, 0.85)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          ctx.restore();
+        }
       }
     });
   }, [sheetData, showBorders, bgMode, bgColor]);

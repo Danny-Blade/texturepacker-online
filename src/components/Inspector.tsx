@@ -4,7 +4,14 @@ import { useCallback, useMemo, useState } from 'react';
 import { getTranslations } from '@/lib/i18n';
 import { useTpStore, type BackgroundMode, type InspectorSectionState } from '@/lib/store';
 import { summarizeSelection } from '@/lib/spriteTree';
-import type { ExportFormat, ImageItem, PackedItem, PackingAlgorithm } from '@/lib/packer';
+import type {
+  ExportFormat,
+  ImageItem,
+  PackedItem,
+  PackingAlgorithm,
+  SpriteEffects,
+  TrimMode,
+} from '@/lib/packer';
 
 interface InspectorProps {
   locale: 'en' | 'zh';
@@ -118,6 +125,41 @@ function ToggleRow({ label, value, onChange }: ToggleRowProps) {
         <span className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition peer-checked:translate-x-4" />
       </span>
     </label>
+  );
+}
+
+interface TrimSegmentedProps {
+  value: TrimMode;
+  onChange: (m: TrimMode) => void;
+  labels: { none: string; rect: string; polygon: string };
+}
+
+function TrimSegmented({ value, onChange, labels }: TrimSegmentedProps) {
+  const modes: { key: TrimMode; label: string }[] = [
+    { key: 'none', label: labels.none },
+    { key: 'rect', label: labels.rect },
+    { key: 'polygon', label: labels.polygon },
+  ];
+  return (
+    <div className="grid grid-cols-3 gap-0 rounded-md border border-[var(--tp-border)] bg-[var(--tp-bg)] p-0.5">
+      {modes.map((m) => {
+        const active = value === m.key;
+        return (
+          <button
+            key={m.key}
+            type="button"
+            onClick={() => onChange(m.key)}
+            className={`h-6 rounded text-[11px] transition ${
+              active
+                ? 'bg-[var(--tp-accent)] text-white'
+                : 'text-[var(--tp-text-muted)] hover:bg-[var(--tp-panel-2)] hover:text-[var(--tp-text)]'
+            }`}
+          >
+            {m.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -488,6 +530,340 @@ function SpritesSummary({
   );
 }
 
+interface EffectsControlsProps {
+  effects: SpriteEffects | undefined;
+  setEffects: (next: SpriteEffects | undefined) => void;
+  labels: {
+    outline: string;
+    outlineWidth: string;
+    outlineColor: string;
+    dropShadow: string;
+    shadowOffset: string;
+    shadowBlur: string;
+    shadowColor: string;
+    shadowOpacity: string;
+    tint: string;
+    tintMode: string;
+    tintMultiply: string;
+    tintOverlay: string;
+    tintScreen: string;
+    tintColor: string;
+    tintOpacity: string;
+  };
+}
+
+function patchEffects(
+  current: SpriteEffects | undefined,
+  patch: Partial<SpriteEffects>,
+): SpriteEffects | undefined {
+  const merged: SpriteEffects = { ...(current ?? {}) };
+  if ('outline' in patch) {
+    if (patch.outline === undefined) delete merged.outline;
+    else merged.outline = patch.outline;
+  }
+  if ('dropShadow' in patch) {
+    if (patch.dropShadow === undefined) delete merged.dropShadow;
+    else merged.dropShadow = patch.dropShadow;
+  }
+  if ('tint' in patch) {
+    if (patch.tint === undefined) delete merged.tint;
+    else merged.tint = patch.tint;
+  }
+  if (!merged.outline && !merged.dropShadow && !merged.tint) return undefined;
+  return merged;
+}
+
+function clampInt(n: number, lo: number, hi: number): number {
+  if (!Number.isFinite(n)) return lo;
+  return Math.max(lo, Math.min(hi, Math.round(n)));
+}
+
+function EffectsControls({ effects, setEffects, labels }: EffectsControlsProps) {
+  const outline = effects?.outline;
+  const dropShadow = effects?.dropShadow;
+  const tint = effects?.tint;
+
+  const setOutlineEnabled = (on: boolean) => {
+    setEffects(
+      patchEffects(effects, {
+        outline: on ? { width: 2, color: '#ffffff' } : undefined,
+      }),
+    );
+  };
+  const setShadowEnabled = (on: boolean) => {
+    setEffects(
+      patchEffects(effects, {
+        dropShadow: on
+          ? { offsetX: 2, offsetY: 2, blur: 4, color: '#000000', opacity: 50 }
+          : undefined,
+      }),
+    );
+  };
+  const setTintEnabled = (on: boolean) => {
+    setEffects(
+      patchEffects(effects, {
+        tint: on ? { mode: 'multiply', color: '#ffffff', opacity: 50 } : undefined,
+      }),
+    );
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Outline */}
+      <div className="space-y-2">
+        <ToggleRow
+          label={labels.outline}
+          value={Boolean(outline)}
+          onChange={setOutlineEnabled}
+        />
+        {outline && (
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <div className="mb-1 text-[10px] text-[var(--tp-text-dim)]">
+                {labels.outlineWidth}
+              </div>
+              <input
+                type="number"
+                min={1}
+                max={16}
+                className="tp-input tp-num"
+                value={outline.width}
+                onChange={(e) =>
+                  setEffects(
+                    patchEffects(effects, {
+                      outline: { ...outline, width: clampInt(Number(e.target.value), 1, 16) },
+                    }),
+                  )
+                }
+              />
+            </div>
+            <div>
+              <div className="mb-1 text-[10px] text-[var(--tp-text-dim)]">
+                {labels.outlineColor}
+              </div>
+              <input
+                type="color"
+                className="h-7 w-full cursor-pointer rounded border border-[var(--tp-border)] bg-[var(--tp-bg)] p-0"
+                value={outline.color}
+                onChange={(e) =>
+                  setEffects(
+                    patchEffects(effects, {
+                      outline: { ...outline, color: e.target.value },
+                    }),
+                  )
+                }
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Drop Shadow */}
+      <div className="space-y-2">
+        <ToggleRow
+          label={labels.dropShadow}
+          value={Boolean(dropShadow)}
+          onChange={setShadowEnabled}
+        />
+        {dropShadow && (
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <div className="mb-1 text-[10px] text-[var(--tp-text-dim)]">
+                  {labels.shadowOffset} X
+                </div>
+                <input
+                  type="number"
+                  min={-32}
+                  max={32}
+                  className="tp-input tp-num"
+                  value={dropShadow.offsetX}
+                  onChange={(e) =>
+                    setEffects(
+                      patchEffects(effects, {
+                        dropShadow: {
+                          ...dropShadow,
+                          offsetX: clampInt(Number(e.target.value), -32, 32),
+                        },
+                      }),
+                    )
+                  }
+                />
+              </div>
+              <div>
+                <div className="mb-1 text-[10px] text-[var(--tp-text-dim)]">
+                  {labels.shadowOffset} Y
+                </div>
+                <input
+                  type="number"
+                  min={-32}
+                  max={32}
+                  className="tp-input tp-num"
+                  value={dropShadow.offsetY}
+                  onChange={(e) =>
+                    setEffects(
+                      patchEffects(effects, {
+                        dropShadow: {
+                          ...dropShadow,
+                          offsetY: clampInt(Number(e.target.value), -32, 32),
+                        },
+                      }),
+                    )
+                  }
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <div className="mb-1 text-[10px] text-[var(--tp-text-dim)]">
+                  {labels.shadowBlur}
+                </div>
+                <input
+                  type="number"
+                  min={0}
+                  max={32}
+                  className="tp-input tp-num"
+                  value={dropShadow.blur}
+                  onChange={(e) =>
+                    setEffects(
+                      patchEffects(effects, {
+                        dropShadow: {
+                          ...dropShadow,
+                          blur: clampInt(Number(e.target.value), 0, 32),
+                        },
+                      }),
+                    )
+                  }
+                />
+              </div>
+              <div>
+                <div className="mb-1 text-[10px] text-[var(--tp-text-dim)]">
+                  {labels.shadowColor}
+                </div>
+                <input
+                  type="color"
+                  className="h-7 w-full cursor-pointer rounded border border-[var(--tp-border)] bg-[var(--tp-bg)] p-0"
+                  value={dropShadow.color}
+                  onChange={(e) =>
+                    setEffects(
+                      patchEffects(effects, {
+                        dropShadow: { ...dropShadow, color: e.target.value },
+                      }),
+                    )
+                  }
+                />
+              </div>
+            </div>
+            <div>
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-[10px] text-[var(--tp-text-dim)]">
+                  {labels.shadowOpacity}
+                </span>
+                <span className="text-[10px] tabular-nums text-[var(--tp-text)]">
+                  {dropShadow.opacity}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={dropShadow.opacity}
+                onChange={(e) =>
+                  setEffects(
+                    patchEffects(effects, {
+                      dropShadow: {
+                        ...dropShadow,
+                        opacity: clampInt(Number(e.target.value), 0, 100),
+                      },
+                    }),
+                  )
+                }
+                className="w-full"
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Tint */}
+      <div className="space-y-2">
+        <ToggleRow label={labels.tint} value={Boolean(tint)} onChange={setTintEnabled} />
+        {tint && (
+          <div className="space-y-2">
+            <div>
+              <div className="mb-1 text-[10px] text-[var(--tp-text-dim)]">
+                {labels.tintMode}
+              </div>
+              <select
+                className="tp-input"
+                value={tint.mode}
+                onChange={(e) =>
+                  setEffects(
+                    patchEffects(effects, {
+                      tint: {
+                        ...tint,
+                        mode: e.target.value as 'multiply' | 'overlay' | 'screen',
+                      },
+                    }),
+                  )
+                }
+              >
+                <option value="multiply">{labels.tintMultiply}</option>
+                <option value="overlay">{labels.tintOverlay}</option>
+                <option value="screen">{labels.tintScreen}</option>
+              </select>
+            </div>
+            <div>
+              <div className="mb-1 text-[10px] text-[var(--tp-text-dim)]">
+                {labels.tintColor}
+              </div>
+              <input
+                type="color"
+                className="h-7 w-full cursor-pointer rounded border border-[var(--tp-border)] bg-[var(--tp-bg)] p-0"
+                value={tint.color}
+                onChange={(e) =>
+                  setEffects(
+                    patchEffects(effects, {
+                      tint: { ...tint, color: e.target.value },
+                    }),
+                  )
+                }
+              />
+            </div>
+            <div>
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-[10px] text-[var(--tp-text-dim)]">
+                  {labels.tintOpacity}
+                </span>
+                <span className="text-[10px] tabular-nums text-[var(--tp-text)]">
+                  {tint.opacity}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={tint.opacity}
+                onChange={(e) =>
+                  setEffects(
+                    patchEffects(effects, {
+                      tint: {
+                        ...tint,
+                        opacity: clampInt(Number(e.target.value), 0, 100),
+                      },
+                    }),
+                  )
+                }
+                className="w-full"
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Inspector({ locale }: InspectorProps) {
   const t = getTranslations(locale);
 
@@ -738,11 +1114,37 @@ export default function Inspector({ locale }: InspectorProps) {
           value={settings.powerOfTwo}
           onChange={(v) => setSettings({ powerOfTwo: v })}
         />
-        <ToggleRow
-          label={t.inspector.trimAlpha}
-          value={settings.trimAlpha}
-          onChange={(v) => setSettings({ trimAlpha: v })}
-        />
+        <div>
+          <div className="tp-label mb-1.5">{t.inspector.trimMode}</div>
+          <TrimSegmented
+            value={settings.trimMode}
+            onChange={(m) =>
+              setSettings({ trimMode: m, trimAlpha: m !== 'none' })
+            }
+            labels={{
+              none: t.inspector.trimNone,
+              rect: t.inspector.trimRect,
+              polygon: t.inspector.trimPolygon,
+            }}
+          />
+          {settings.trimMode === 'polygon' && (
+            <div className="mt-2">
+              <div className="tp-label mb-1.5">{t.inspector.polygonTolerance}</div>
+              <input
+                type="number"
+                min={0.5}
+                max={10}
+                step={0.5}
+                className="tp-input tp-num"
+                value={settings.polygonTolerance}
+                onChange={(e) => {
+                  const v = Math.max(0.5, Math.min(10, Number(e.target.value) || 0.5));
+                  setSettings({ polygonTolerance: v });
+                }}
+              />
+            </div>
+          )}
+        </div>
 
         <div>
           <div className="tp-label mb-1.5">{t.inspector.backgroundColor}</div>
