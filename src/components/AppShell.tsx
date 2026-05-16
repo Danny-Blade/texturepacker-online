@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTpStore, loadImageFromFile, type ImageItem } from '@/lib/store';
-import { generateExportData } from '@/lib/packer';
 import { getTranslations, type Locale } from '@/lib/i18n';
 import MenuBar from './MenuBar';
 import Toolbar from './Toolbar';
@@ -10,6 +9,9 @@ import SpritesPanel from './SpritesPanel';
 import CanvasViewport from './CanvasViewport';
 import Inspector from './Inspector';
 import StatusBar from './StatusBar';
+import PublishDialog from './PublishDialog';
+import ShortcutsDialog from './ShortcutsDialog';
+import { parseTpsPlist } from '@/lib/tpsCompat';
 
 interface AppShellProps {
   locale: Locale;
@@ -27,13 +29,6 @@ interface FileSystemEntryLike {
       err?: (e: unknown) => void,
     ) => void;
   };
-}
-
-function extForFormat(fmt: string): string {
-  if (fmt === 'css') return 'css';
-  if (fmt === 'xml') return 'xml';
-  if (fmt === 'cocos2d') return 'plist';
-  return 'json';
 }
 
 async function collectFilesFromEntry(
@@ -91,6 +86,8 @@ export default function AppShell({ locale }: AppShellProps) {
   const dragSideRef = useRef<'left' | 'right' | null>(null);
   const dragStartRef = useRef<{ x: number; w: number }>({ x: 0, w: 0 });
   const [dragSide, setDragSide] = useState<'left' | 'right' | null>(null);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   const addSpritesInputRef = useRef<HTMLInputElement>(null);
   const addFolderInputRef = useRef<HTMLInputElement>(null);
@@ -183,72 +180,14 @@ export default function AppShell({ locale }: AppShellProps) {
     URL.revokeObjectURL(url);
   }, []);
 
-  const handlePublish = useCallback(async () => {
-    const { packResult, fileName, exportFormat, dirHandle } = useTpStore.getState();
-    if (!packResult) {
-      useTpStore.getState().showNotification(t.errors.noImages);
+  const handlePublish = useCallback(() => {
+    const { packResult, showNotification } = useTpStore.getState();
+    if (!packResult || packResult.sheets.length === 0) {
+      showNotification(t.errors.noImages);
       return;
     }
-    const canvas = document.createElement('canvas');
-    canvas.width = packResult.width;
-    canvas.height = packResult.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    packResult.packed.forEach((item) => {
-      const src = item.pixelSource ?? item.image;
-      const ex = item.extrudePadding ?? 0;
-      // Offset by -ex so the extrude halo lands in the padding ring around the
-      // inner frame (pixelSource is sized width+2*ex × height+2*ex).
-      ctx.save();
-      if (item.rotated) {
-        ctx.translate(item.x + item.height, item.y);
-        ctx.rotate(Math.PI / 2);
-        ctx.drawImage(src, -ex, -ex, item.width + ex * 2, item.height + ex * 2);
-      } else {
-        ctx.drawImage(src, item.x - ex, item.y - ex, item.width + ex * 2, item.height + ex * 2);
-      }
-      ctx.restore();
-    });
-    const imageBlob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob((b) => resolve(b), 'image/png'),
-    );
-    if (!imageBlob) return;
-    const dataExt = extForFormat(exportFormat);
-    const dataStr = generateExportData(
-      packResult.packed,
-      packResult.width,
-      packResult.height,
-      exportFormat,
-      `${fileName}.png`,
-    );
-    const dataBlob = new Blob([dataStr], { type: 'text/plain' });
-
-    type DirHandleAny = FileSystemDirectoryHandle & {
-      getFileHandle: (n: string, o?: { create?: boolean }) => Promise<{
-        createWritable: () => Promise<{ write: (d: Blob) => Promise<void>; close: () => Promise<void> }>;
-      }>;
-    };
-    if (dirHandle) {
-      try {
-        const dh = dirHandle as DirHandleAny;
-        const imgFh = await dh.getFileHandle(`${fileName}.png`, { create: true });
-        const imgW = await imgFh.createWritable();
-        await imgW.write(imageBlob);
-        await imgW.close();
-        const dataFh = await dh.getFileHandle(`${fileName}.${dataExt}`, { create: true });
-        const dataW = await dataFh.createWritable();
-        await dataW.write(dataBlob);
-        await dataW.close();
-        useTpStore.getState().showNotification('Published to output folder');
-        return;
-      } catch {
-        /* fall through to download */
-      }
-    }
-    triggerDownload(`${fileName}.png`, imageBlob);
-    triggerDownload(`${fileName}.${dataExt}`, dataBlob);
-    useTpStore.getState().showNotification('Sprite sheet published');
-  }, [t.errors.noImages, triggerDownload]);
+    setPublishOpen(true);
+  }, [t.errors.noImages]);
 
   const handleSaveProject = useCallback(async () => {
     const { images, settings, exportFormat, fileName, selectedDirPath, dirHandle } =
@@ -302,8 +241,34 @@ export default function AppShell({ locale }: AppShellProps) {
       if (!file) return;
       const reader = new FileReader();
       reader.onload = async (ev) => {
+        const raw = (ev.target?.result as string) ?? '';
+        const head = raw.trimStart().slice(0, 256);
+        const isPlist =
+          head.startsWith('<?xml') || head.includes('<!DOCTYPE plist') || head.includes('<plist');
+
+        if (isPlist) {
+          try {
+            const imported = parseTpsPlist(raw);
+            const s = useTpStore.getState();
+            if (Object.keys(imported.settings).length > 0) s.setSettings(imported.settings);
+            if (imported.exportFormat) s.setExportFormat(imported.exportFormat);
+            if (imported.fileName) s.setFileName(imported.fileName);
+            for (const w of imported.warnings) console.warn(`[tps] ${w}`);
+            const refCount = imported.referencedFiles.length;
+            const baseMsg = t.tps.importedDesktop;
+            const refMsg =
+              refCount > 0
+                ? ' ' + t.tps.referencedFilesWarning.replace('{n}', String(refCount))
+                : '';
+            s.showNotification(`${baseMsg}${refMsg}`);
+          } catch {
+            useTpStore.getState().showNotification(t.project.loadError);
+          }
+          return;
+        }
+
         try {
-          const projectData = JSON.parse(ev.target?.result as string);
+          const projectData = JSON.parse(raw);
           if (!projectData.version || !projectData.images) throw new Error('Invalid project');
           const loaded: ImageItem[] = [];
           for (const data of projectData.images) {
@@ -341,7 +306,7 @@ export default function AppShell({ locale }: AppShellProps) {
       };
       reader.readAsText(file);
     },
-    [t.project.loaded, t.project.loadError],
+    [t.project.loaded, t.project.loadError, t.tps.importedDesktop, t.tps.referencedFilesWarning],
   );
 
   const handleNewProject = useCallback(() => {
@@ -431,6 +396,9 @@ export default function AppShell({ locale }: AppShellProps) {
       } else if (meta && e.key === '0') {
         e.preventDefault();
         useTpStore.getState().resetView();
+      } else if (!meta && e.key === '?') {
+        e.preventDefault();
+        setShortcutsOpen(true);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -446,6 +414,7 @@ export default function AppShell({ locale }: AppShellProps) {
     onAddSprites: handleAddSprites,
     onAddFolder: handleAddFolder,
     onPublish: handlePublish,
+    onShowShortcuts: () => setShortcutsOpen(true),
   };
 
   return (
@@ -512,6 +481,18 @@ export default function AppShell({ locale }: AppShellProps) {
         accept=".tps,application/json"
         className="hidden"
         onChange={handleProjectFileSelected}
+      />
+
+      <PublishDialog
+        locale={locale}
+        isOpen={publishOpen}
+        onClose={() => setPublishOpen(false)}
+      />
+
+      <ShortcutsDialog
+        locale={locale}
+        isOpen={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
       />
     </div>
   );

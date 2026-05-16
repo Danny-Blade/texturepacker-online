@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useTpStore, selectExceedsMax } from '@/lib/store';
+import { useTpStore, selectExceedsMax, selectActiveSheet } from '@/lib/store';
 import { getTranslations, Locale } from '@/lib/i18n';
 import type { PackedItem } from '@/lib/packer';
 
@@ -87,6 +87,7 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
     selectedIds,
     maxWidth,
     maxHeight,
+    activeSheet,
   } = useTpStore(
     useShallow((s) => ({
       zoom: s.zoom,
@@ -99,10 +100,13 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
       selectedIds: s.selectedIds,
       maxWidth: s.settings.maxWidth,
       maxHeight: s.settings.maxHeight,
+      activeSheet: s.activeSheet,
     })),
   );
 
   const exceedsMax = useTpStore(selectExceedsMax);
+  const sheetData = useTpStore(selectActiveSheet);
+  const setActiveSheet = useTpStore((s) => s.setActiveSheet);
 
   const setZoom = useTpStore((s) => s.setZoom);
   const zoomIn = useTpStore((s) => s.zoomIn);
@@ -129,12 +133,12 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   useEffect(() => {
-    if (!packResult || !canvasRef.current) return;
+    if (!sheetData || !canvasRef.current) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const { packed, width, height } = packResult;
+    const { packed, width, height } = sheetData;
     canvas.width = width;
     canvas.height = height;
 
@@ -168,7 +172,7 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
         ctx.strokeRect(item.x + 0.5, item.y + 0.5, w - 1, h - 1);
       }
     });
-  }, [packResult, showBorders, bgMode, bgColor]);
+  }, [sheetData, showBorders, bgMode, bgColor]);
 
   /**
    * Animate the viewport pan (and optionally zoom) to focus a world-space bounds rect.
@@ -177,7 +181,7 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
   const animateFocusToBounds = useCallback(
     (bounds: Bounds, options?: { fitZoom?: boolean }) => {
       const container = viewportRef.current;
-      const sheet = packResult;
+      const sheet = sheetData;
       if (!container || !sheet) return;
       const rect = container.getBoundingClientRect();
       const state = useTpStore.getState();
@@ -229,12 +233,12 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
       };
       focusAnimRef.current = requestAnimationFrame(step);
     },
-    [packResult, setPan, setZoom],
+    [sheetData, setPan, setZoom],
   );
 
   // Auto-focus on single-selection changes.
   useEffect(() => {
-    if (!packResult) {
+    if (!sheetData) {
       lastFocusedIdRef.current = null;
       return;
     }
@@ -244,7 +248,7 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
     }
     const id = selectedIds[0];
     if (id === lastFocusedIdRef.current) return;
-    const item = packResult.packed.find((p) => p.id === id);
+    const item = sheetData.packed.find((p) => p.id === id);
     if (!item || !item.placed) {
       lastFocusedIdRef.current = null;
       return;
@@ -254,7 +258,7 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
     // animateFocusToBounds is stable for our purposes; we deliberately ignore it
     // to avoid re-firing when zoom/pan changes inside the animation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedIds, packResult]);
+  }, [selectedIds, sheetData]);
 
   // Cancel pending animation if user starts dragging.
   useEffect(() => {
@@ -395,13 +399,13 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
 
   // Fit-to-selection action (also bound to keyboard 'f').
   const fitToSelection = useCallback(() => {
-    if (!packResult || selectedIds.length === 0) return;
+    if (!sheetData || selectedIds.length === 0) return;
     const idSet = new Set(selectedIds);
-    const items = packResult.packed.filter((p) => idSet.has(p.id) && p.placed);
+    const items = sheetData.packed.filter((p) => idSet.has(p.id) && p.placed);
     const bounds = unionBounds(items);
     if (!bounds || bounds.width <= 0 || bounds.height <= 0) return;
     animateFocusToBounds(bounds, { fitZoom: true });
-  }, [packResult, selectedIds, animateFocusToBounds]);
+  }, [sheetData, selectedIds, animateFocusToBounds]);
 
   // Local keyboard handler on the viewport (arrow nudges, f, 0).
   const onViewportKeyDown = useCallback(
@@ -448,8 +452,10 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
     [setPan, resetView, fitToSelection],
   );
 
-  const surfaceWidth = packResult?.width ?? 0;
-  const surfaceHeight = packResult?.height ?? 0;
+  const surfaceWidth = sheetData?.width ?? 0;
+  const surfaceHeight = sheetData?.height ?? 0;
+  const sheetsList = packResult?.sheets ?? [];
+  const showTabs = sheetsList.length > 1;
 
   const cursor = isDragging
     ? 'grabbing'
@@ -480,6 +486,39 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-[var(--tp-bg)]">
+      {showTabs && (
+        <div
+          className="h-7 flex items-center px-2 gap-1 border-b overflow-x-auto"
+          style={{ borderColor: 'var(--tp-border)', background: 'var(--tp-bg)' }}
+          role="tablist"
+          aria-label="Sheets"
+        >
+          {sheetsList.map((sh, i) => {
+            const active = i === activeSheet;
+            const label = t.canvas.sheet.replace('{n}', String(i + 1));
+            return (
+              <button
+                key={sh.index}
+                role="tab"
+                aria-selected={active}
+                onClick={() => setActiveSheet(i)}
+                className={`h-6 px-3 text-[11px] rounded-t-md border-x border-t transition whitespace-nowrap ${
+                  active
+                    ? 'bg-[var(--tp-panel)] text-[var(--tp-text)] border-[var(--tp-border)]'
+                    : 'bg-[var(--tp-bg-elev)] text-[var(--tp-text-muted)] border-transparent hover:bg-[var(--tp-panel-2)] hover:text-[var(--tp-text)]'
+                }`}
+                style={
+                  active
+                    ? { boxShadow: 'inset 0 -2px 0 0 var(--tp-accent)' }
+                    : undefined
+                }
+              >
+                {label} ({sh.width}×{sh.height})
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div
         className="h-9 flex items-center px-3 gap-2 text-xs border-b"
         style={{ borderColor: 'var(--tp-border)', background: 'var(--tp-bg-elev)' }}
@@ -557,7 +596,7 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
         onMouseDown={onViewportMouseDown}
         onKeyDown={onViewportKeyDown}
       >
-        {packResult ? (
+        {sheetData ? (
           <div
             ref={surfaceRef}
             className="absolute top-0 left-0"
@@ -574,7 +613,7 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
               style={{ width: surfaceWidth, height: surfaceHeight, imageRendering: 'pixelated' }}
             />
             <div className="absolute inset-0 pointer-events-none">
-              {packResult.packed.map((item) => {
+              {sheetData.packed.map((item) => {
                 const w = item.rotated ? item.height : item.width;
                 const h = item.rotated ? item.width : item.height;
                 const selected = selectedSet.has(item.id);

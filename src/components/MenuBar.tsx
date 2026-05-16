@@ -13,6 +13,7 @@ interface MenuBarProps {
   onAddSprites?: () => void;
   onAddFolder?: () => void;
   onPublish?: () => void;
+  onShowShortcuts?: () => void;
 }
 
 type MenuKey = 'file' | 'edit' | 'view' | 'effects' | 'help';
@@ -35,6 +36,7 @@ export default function MenuBar({
   onAddSprites,
   onAddFolder,
   onPublish,
+  onShowShortcuts,
 }: MenuBarProps) {
   const t = getTranslations(locale);
   const [openMenu, setOpenMenu] = useState<MenuKey | null>(null);
@@ -174,6 +176,13 @@ export default function MenuBar({
     help: {
       label: t.menu.help,
       items: [
+        {
+          key: 'shortcuts',
+          label: t.shortcuts.menuItem,
+          shortcut: '?',
+          onClick: fallback(onShowShortcuts, 'Shortcuts dialog not wired'),
+          separatorAfter: true,
+        },
         { key: 'docs', label: t.menu.docs, onClick: handleDocs, separatorAfter: true },
         { key: 'about', label: t.menu.about, onClick: handleAbout },
       ],
