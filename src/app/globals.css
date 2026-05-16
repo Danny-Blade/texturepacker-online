@@ -1,41 +1,163 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f9fafb;
-  --foreground: #111827;
+  --tp-bg: #0b1220;
+  --tp-bg-elev: #111a2e;
+  --tp-panel: #0f172a;
+  --tp-panel-2: #1e293b;
+  --tp-border: #1f2a44;
+  --tp-border-strong: #334155;
+  --tp-text: #e2e8f0;
+  --tp-text-muted: #94a3b8;
+  --tp-text-dim: #64748b;
+  --tp-accent: #3b82f6;
+  --tp-accent-hover: #60a5fa;
+  --tp-accent-soft: rgba(59, 130, 246, 0.15);
+  --tp-danger: #ef4444;
+  --tp-warn: #f59e0b;
+  --tp-success: #10b981;
+}
+
+html,
+body {
+  height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--tp-bg);
+  color: var(--tp-text);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'Noto Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-feature-settings: 'cv11', 'ss01';
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Custom scrollbar */
+/* IDE-style scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
-  border-radius: 4px;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
-  border-radius: 4px;
+  background: #1e293b;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #a1a1a1;
+  background: #334155;
+  background-clip: padding-box;
+  border: 2px solid transparent;
 }
 
-/* Checkerboard pattern for transparent background */
-.checkerboard {
-  background-image: linear-gradient(45deg, #ccc 25%, transparent 25%),
-    linear-gradient(-45deg, #ccc 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #ccc 75%),
-    linear-gradient(-45deg, transparent 75%, #ccc 75%);
-  background-size: 20px 20px;
-  background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+/* Checkerboard for transparent preview */
+.tp-checker {
+  background-color: #0b1220;
+  background-image:
+    linear-gradient(45deg, #1e293b 25%, transparent 25%),
+    linear-gradient(-45deg, #1e293b 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1e293b 75%),
+    linear-gradient(-45deg, transparent 75%, #1e293b 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+}
+
+/* Subtle focus outline */
+.tp-focus:focus-visible {
+  outline: 2px solid var(--tp-accent);
+  outline-offset: 2px;
+}
+
+/* Hide native number input spin buttons for a cleaner IDE look */
+input[type='number'].tp-num::-webkit-inner-spin-button,
+input[type='number'].tp-num::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type='number'].tp-num {
+  -moz-appearance: textfield;
+}
+
+/* Splitter handle */
+.tp-splitter {
+  position: relative;
+  flex: 0 0 4px;
+  background: transparent;
+  cursor: col-resize;
+  user-select: none;
+}
+.tp-splitter::after {
+  content: '';
+  position: absolute;
+  inset: 0 1px;
+  background: var(--tp-border);
+}
+.tp-splitter:hover::after,
+.tp-splitter.is-dragging::after {
+  background: var(--tp-accent);
+}
+
+/* Generic panel chrome */
+.tp-panel {
+  background: var(--tp-panel);
+  border: 1px solid var(--tp-border);
+}
+
+.tp-input {
+  background: var(--tp-bg);
+  border: 1px solid var(--tp-border);
+  color: var(--tp-text);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  width: 100%;
+}
+.tp-input:focus {
+  outline: none;
+  border-color: var(--tp-accent);
+  box-shadow: 0 0 0 2px var(--tp-accent-soft);
+}
+
+.tp-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--tp-border);
+  background: var(--tp-bg-elev);
+  color: var(--tp-text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.tp-btn:hover {
+  background: var(--tp-panel-2);
+  border-color: var(--tp-border-strong);
+}
+.tp-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.tp-btn-primary {
+  background: var(--tp-accent);
+  border-color: var(--tp-accent);
+  color: white;
+}
+.tp-btn-primary:hover {
+  background: var(--tp-accent-hover);
+  border-color: var(--tp-accent-hover);
+}
+
+.tp-label {
+  font-size: 11px;
+  color: var(--tp-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 500;
 }

@@ -1,8 +1,5 @@
 import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
 import './globals.css';
-
-const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
   title: 'Web TexturePacker - Free Online Sprite Sheet Generator',
@@ -44,7 +41,7 @@ export default function RootLayout({
       <head>
         <link rel="icon" href="/favicon.ico" sizes="any" />
       </head>
-      <body className={inter.className}>{children}</body>
+      <body className="font-sans bg-[var(--tp-bg)] text-[var(--tp-text)]">{children}</body>
     </html>
   );
 }
