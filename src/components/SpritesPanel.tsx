@@ -23,7 +23,6 @@ import {
   flattenTree,
   type FolderNode,
   type SpriteNode,
-  type TreeNode,
 } from '@/lib/spriteTree';
 
 interface SpritesPanelProps {
@@ -209,7 +208,6 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [dragOverTarget, setDragOverTarget] = useState<DragOverTarget>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
-  const [renameDraft, setRenameDraft] = useState<string>('');
   const [hoveredFolder, setHoveredFolder] = useState<string | null>(null);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
@@ -378,13 +376,12 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
     });
   }, [selectedIds, images]);
 
-  // Initialise rename draft when entering rename mode.
-  useEffect(() => {
-    if (!renamingId) return;
+  const renamingBaseName = useMemo(() => {
+    if (!renamingId) return '';
     const img = images.find((i) => i.id === renamingId);
-    if (!img) return;
+    if (!img) return '';
     const idx = img.name.lastIndexOf('/');
-    setRenameDraft(idx >= 0 ? img.name.slice(idx + 1) : img.name);
+    return idx >= 0 ? img.name.slice(idx + 1) : img.name;
   }, [renamingId, images]);
 
   // Close context menu / sort menu on global mousedown or Escape.
@@ -436,15 +433,6 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
   const cancelRename = useCallback(() => {
     useTpStore.getState().startRename(null);
   }, []);
-
-  const getDraggedIds = useCallback(
-    (id: string): string[] => {
-      const state = useTpStore.getState();
-      if (selectedSet.has(id) && selectedIds.length > 1) return selectedIds;
-      return [id];
-    },
-    [selectedIds, selectedSet],
-  );
 
   const onSpriteDragStart = useCallback(
     (e: ReactDragEvent<HTMLDivElement>, id: string) => {
@@ -743,6 +731,7 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
     return (
       <div
         key={node.id}
+        data-sprite-row={node.id}
         ref={(el) => {
           if (el) rowRefs.current.set(node.id, el);
           else rowRefs.current.delete(node.id);
@@ -789,23 +778,23 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
         <div className="min-w-0 flex-1">
           {isRenaming ? (
             <input
+              key={node.id}
               autoFocus
-              value={renameDraft}
+              defaultValue={renamingBaseName}
               onFocus={(e) => e.currentTarget.select()}
-              onChange={(e) => setRenameDraft(e.target.value)}
               onClick={(e) => e.stopPropagation()}
               onMouseDown={(e) => e.stopPropagation()}
               onKeyDown={(e) => {
                 e.stopPropagation();
                 if (e.key === 'Enter') {
                   e.preventDefault();
-                  commitRename(node.id, renameDraft);
+                  commitRename(node.id, e.currentTarget.value);
                 } else if (e.key === 'Escape') {
                   e.preventDefault();
                   cancelRename();
                 }
               }}
-              onBlur={() => commitRename(node.id, renameDraft)}
+              onBlur={(e) => commitRename(node.id, e.currentTarget.value)}
               className="w-full rounded-sm border border-[var(--tp-accent)] bg-[var(--tp-bg)] px-1 py-0.5 text-xs text-[var(--tp-text)] outline-none"
             />
           ) : (
@@ -959,7 +948,8 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
       items.push({
         label: 'Reveal selection',
         onClick: () => {
-          const el = rowRefs.current.get(contextMenu.id);
+          const id = contextMenu.id;
+          const el = document.querySelector<HTMLDivElement>(`[data-sprite-row="${id}"]`);
           if (el) el.scrollIntoView({ block: 'nearest' });
         },
       });
