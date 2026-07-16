@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTpStore, loadImageFromFile, type ImageItem } from '@/lib/store';
-import { generateExportData } from '@/lib/packer';
 import { getTranslations, type Locale } from '@/lib/i18n';
 import MenuBar from './MenuBar';
 import Toolbar from './Toolbar';
@@ -10,6 +9,17 @@ import SpritesPanel from './SpritesPanel';
 import CanvasViewport from './CanvasViewport';
 import Inspector from './Inspector';
 import StatusBar from './StatusBar';
+import PublishDialog from './PublishDialog';
+import ShortcutsDialog from './ShortcutsDialog';
+import { parseTpsPlist } from '@/lib/tpsCompat';
+import {
+  createSmartFolderManager,
+  isFileSystemAccessSupported,
+  scanDirectory,
+  WATCH_FOLDER_EVENT,
+  type SmartFolderManager,
+  type WatchedFolder,
+} from '@/lib/smartFolder';
 
 interface AppShellProps {
   locale: Locale;
@@ -27,13 +37,6 @@ interface FileSystemEntryLike {
       err?: (e: unknown) => void,
     ) => void;
   };
-}
-
-function extForFormat(fmt: string): string {
-  if (fmt === 'css') return 'css';
-  if (fmt === 'xml') return 'xml';
-  if (fmt === 'cocos2d') return 'plist';
-  return 'json';
 }
 
 async function collectFilesFromEntry(
@@ -91,6 +94,8 @@ export default function AppShell({ locale }: AppShellProps) {
   const dragSideRef = useRef<'left' | 'right' | null>(null);
   const dragStartRef = useRef<{ x: number; w: number }>({ x: 0, w: 0 });
   const [dragSide, setDragSide] = useState<'left' | 'right' | null>(null);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   const addSpritesInputRef = useRef<HTMLInputElement>(null);
   const addFolderInputRef = useRef<HTMLInputElement>(null);
@@ -172,6 +177,158 @@ export default function AppShell({ locale }: AppShellProps) {
   const handleAddSprites = useCallback(() => addSpritesInputRef.current?.click(), []);
   const handleAddFolder = useCallback(() => addFolderInputRef.current?.click(), []);
 
+  const smartFolderManagerRef = useRef<SmartFolderManager | null>(null);
+
+  const loadFilesFromSmartFolder = useCallback(
+    async (folder: WatchedFolder, files: File[], relativePaths: string[]) => {
+      if (files.length === 0) return 0;
+      const loaded: ImageItem[] = [];
+      await Promise.all(
+        files.map(async (f, idx) => {
+          try {
+            const rel = relativePaths[idx];
+            try {
+              Object.defineProperty(f, 'webkitRelativePath', {
+                value: `${folder.name}/${rel}`,
+                configurable: true,
+              });
+            } catch {
+              // ignore
+            }
+            loaded.push(await loadImageFromFile(f));
+          } catch {
+            /* ignore single failure */
+          }
+        }),
+      );
+      if (loaded.length === 0) return 0;
+      const store = useTpStore.getState();
+      store.addImages(loaded);
+      const sf = store.smartFolders.find((f) => f.id === folder.id);
+      const prevIds = sf ? sf.trackedIds : [];
+      store.updateSmartFolder(folder.id, {
+        trackedIds: [...prevIds, ...loaded.map((l) => l.id)],
+        lastSync: Date.now(),
+      });
+      return loaded.length;
+    },
+    [],
+  );
+
+  const ensureSmartFolderManager = useCallback((): SmartFolderManager | null => {
+    if (smartFolderManagerRef.current) return smartFolderManagerRef.current;
+    if (typeof window === 'undefined') return null;
+    const mgr = createSmartFolderManager({
+      onSync: (folder, addedFiles, removedPaths) => {
+        const store = useTpStore.getState();
+        const prefix = `${folder.name}/`;
+        const removedNames = new Set(
+          removedPaths.map((p) => `${prefix}${p}`.replace(/\.[^/.]+$/, '')),
+        );
+        let removedCount = 0;
+        if (removedNames.size > 0) {
+          const removeIds = store.images
+            .filter((img) => removedNames.has(img.name))
+            .map((img) => img.id);
+          if (removeIds.length > 0) {
+            store.removeImages(removeIds);
+            removedCount = removeIds.length;
+            const sf = store.smartFolders.find((f) => f.id === folder.id);
+            if (sf) {
+              const removeSet = new Set(removeIds);
+              store.updateSmartFolder(folder.id, {
+                trackedIds: sf.trackedIds.filter((id) => !removeSet.has(id)),
+              });
+            }
+          }
+        }
+        const finalize = (addedCount: number) => {
+          useTpStore.getState().updateSmartFolder(folder.id, { lastSync: Date.now() });
+          useTpStore
+            .getState()
+            .showNotification(`Smart Folder synced: +${addedCount} -${removedCount}`);
+        };
+        if (addedFiles.length > 0) {
+          const rels = addedFiles.map((f) => {
+            const rp = (f as File & { webkitRelativePath?: string }).webkitRelativePath || '';
+            return rp.startsWith(prefix) ? rp.slice(prefix.length) : f.name;
+          });
+          loadFilesFromSmartFolder(folder, addedFiles, rels).then(finalize);
+        } else {
+          finalize(0);
+        }
+      },
+      onError: (folder, err) => {
+        useTpStore
+          .getState()
+          .showNotification(`Smart Folder error: ${err.message}`);
+        useTpStore.getState().removeSmartFolder(folder.id);
+      },
+    });
+    smartFolderManagerRef.current = mgr;
+    return mgr;
+  }, [loadFilesFromSmartFolder]);
+
+  useEffect(() => {
+    return () => {
+      smartFolderManagerRef.current?.dispose();
+      smartFolderManagerRef.current = null;
+    };
+  }, []);
+
+  const watchDirectoryHandle = useCallback(
+    async (handle: FileSystemDirectoryHandle) => {
+      const mgr = ensureSmartFolderManager();
+      if (!mgr) return;
+      try {
+        const folder = await mgr.watch(handle);
+        useTpStore.getState().addSmartFolder({
+          id: folder.id,
+          name: folder.name,
+          trackedIds: [],
+          lastSync: Date.now(),
+        });
+        const scan = await scanDirectory(handle);
+        const count = await loadFilesFromSmartFolder(folder, scan.files, scan.relativePaths);
+        useTpStore.getState().showNotification(
+          `Watching ${folder.name} (${count} sprite${count === 1 ? '' : 's'})`,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        useTpStore.getState().showNotification(`${t.smartFolder.scanError}: ${msg}`);
+      }
+    },
+    [ensureSmartFolderManager, loadFilesFromSmartFolder, t.smartFolder.scanError],
+  );
+
+  const handleWatchFolder = useCallback(async () => {
+    if (!isFileSystemAccessSupported()) {
+      useTpStore.getState().showNotification(t.smartFolder.notSupported);
+      return;
+    }
+    interface WindowWithPicker {
+      showDirectoryPicker: (options?: unknown) => Promise<FileSystemDirectoryHandle>;
+    }
+    try {
+      const w = window as unknown as WindowWithPicker;
+      const handle = await w.showDirectoryPicker();
+      await watchDirectoryHandle(handle);
+    } catch {
+      /* user cancelled */
+    }
+  }, [t.smartFolder.notSupported, watchDirectoryHandle]);
+
+  useEffect(() => {
+    const onEvent = (e: Event) => {
+      const detail = (e as CustomEvent<{ handle: FileSystemDirectoryHandle }>).detail;
+      if (detail && detail.handle) {
+        void watchDirectoryHandle(detail.handle);
+      }
+    };
+    window.addEventListener(WATCH_FOLDER_EVENT, onEvent);
+    return () => window.removeEventListener(WATCH_FOLDER_EVENT, onEvent);
+  }, [watchDirectoryHandle]);
+
   const triggerDownload = useCallback((filename: string, blob: Blob) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -183,68 +340,14 @@ export default function AppShell({ locale }: AppShellProps) {
     URL.revokeObjectURL(url);
   }, []);
 
-  const handlePublish = useCallback(async () => {
-    const { packResult, fileName, exportFormat, dirHandle } = useTpStore.getState();
-    if (!packResult) {
-      useTpStore.getState().showNotification(t.errors.noImages);
+  const handlePublish = useCallback(() => {
+    const { packResult, showNotification } = useTpStore.getState();
+    if (!packResult || packResult.sheets.length === 0) {
+      showNotification(t.errors.noImages);
       return;
     }
-    const canvas = document.createElement('canvas');
-    canvas.width = packResult.width;
-    canvas.height = packResult.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    packResult.packed.forEach((item) => {
-      ctx.save();
-      if (item.rotated) {
-        ctx.translate(item.x + item.height, item.y);
-        ctx.rotate(Math.PI / 2);
-        ctx.drawImage(item.image, 0, 0, item.width, item.height);
-      } else {
-        ctx.drawImage(item.image, item.x, item.y, item.width, item.height);
-      }
-      ctx.restore();
-    });
-    const imageBlob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob((b) => resolve(b), 'image/png'),
-    );
-    if (!imageBlob) return;
-    const dataExt = extForFormat(exportFormat);
-    const dataStr = generateExportData(
-      packResult.packed,
-      packResult.width,
-      packResult.height,
-      exportFormat,
-      `${fileName}.png`,
-    );
-    const dataBlob = new Blob([dataStr], { type: 'text/plain' });
-
-    type DirHandleAny = FileSystemDirectoryHandle & {
-      getFileHandle: (n: string, o?: { create?: boolean }) => Promise<{
-        createWritable: () => Promise<{ write: (d: Blob) => Promise<void>; close: () => Promise<void> }>;
-      }>;
-    };
-    if (dirHandle) {
-      try {
-        const dh = dirHandle as DirHandleAny;
-        const imgFh = await dh.getFileHandle(`${fileName}.png`, { create: true });
-        const imgW = await imgFh.createWritable();
-        await imgW.write(imageBlob);
-        await imgW.close();
-        const dataFh = await dh.getFileHandle(`${fileName}.${dataExt}`, { create: true });
-        const dataW = await dataFh.createWritable();
-        await dataW.write(dataBlob);
-        await dataW.close();
-        useTpStore.getState().showNotification('Published to output folder');
-        return;
-      } catch {
-        /* fall through to download */
-      }
-    }
-    triggerDownload(`${fileName}.png`, imageBlob);
-    triggerDownload(`${fileName}.${dataExt}`, dataBlob);
-    useTpStore.getState().showNotification('Sprite sheet published');
-  }, [t.errors.noImages, triggerDownload]);
+    setPublishOpen(true);
+  }, [t.errors.noImages]);
 
   const handleSaveProject = useCallback(async () => {
     const { images, settings, exportFormat, fileName, selectedDirPath, dirHandle } =
@@ -298,8 +401,34 @@ export default function AppShell({ locale }: AppShellProps) {
       if (!file) return;
       const reader = new FileReader();
       reader.onload = async (ev) => {
+        const raw = (ev.target?.result as string) ?? '';
+        const head = raw.trimStart().slice(0, 256);
+        const isPlist =
+          head.startsWith('<?xml') || head.includes('<!DOCTYPE plist') || head.includes('<plist');
+
+        if (isPlist) {
+          try {
+            const imported = parseTpsPlist(raw);
+            const s = useTpStore.getState();
+            if (Object.keys(imported.settings).length > 0) s.setSettings(imported.settings);
+            if (imported.exportFormat) s.setExportFormat(imported.exportFormat);
+            if (imported.fileName) s.setFileName(imported.fileName);
+            for (const w of imported.warnings) console.warn(`[tps] ${w}`);
+            const refCount = imported.referencedFiles.length;
+            const baseMsg = t.tps.importedDesktop;
+            const refMsg =
+              refCount > 0
+                ? ' ' + t.tps.referencedFilesWarning.replace('{n}', String(refCount))
+                : '';
+            s.showNotification(`${baseMsg}${refMsg}`);
+          } catch {
+            useTpStore.getState().showNotification(t.project.loadError);
+          }
+          return;
+        }
+
         try {
-          const projectData = JSON.parse(ev.target?.result as string);
+          const projectData = JSON.parse(raw);
           if (!projectData.version || !projectData.images) throw new Error('Invalid project');
           const loaded: ImageItem[] = [];
           for (const data of projectData.images) {
@@ -337,7 +466,7 @@ export default function AppShell({ locale }: AppShellProps) {
       };
       reader.readAsText(file);
     },
-    [t.project.loaded, t.project.loadError],
+    [t.project.loaded, t.project.loadError, t.tps.importedDesktop, t.tps.referencedFilesWarning],
   );
 
   const handleNewProject = useCallback(() => {
@@ -427,6 +556,9 @@ export default function AppShell({ locale }: AppShellProps) {
       } else if (meta && e.key === '0') {
         e.preventDefault();
         useTpStore.getState().resetView();
+      } else if (!meta && e.key === '?') {
+        e.preventDefault();
+        setShortcutsOpen(true);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -441,7 +573,9 @@ export default function AppShell({ locale }: AppShellProps) {
     onSaveProjectAs: handleSaveProject,
     onAddSprites: handleAddSprites,
     onAddFolder: handleAddFolder,
+    onWatchFolder: handleWatchFolder,
     onPublish: handlePublish,
+    onShowShortcuts: () => setShortcutsOpen(true),
   };
 
   return (
@@ -508,6 +642,18 @@ export default function AppShell({ locale }: AppShellProps) {
         accept=".tps,application/json"
         className="hidden"
         onChange={handleProjectFileSelected}
+      />
+
+      <PublishDialog
+        locale={locale}
+        isOpen={publishOpen}
+        onClose={() => setPublishOpen(false)}
+      />
+
+      <ShortcutsDialog
+        locale={locale}
+        isOpen={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
       />
     </div>
   );
