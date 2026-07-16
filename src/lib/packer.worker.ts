@@ -22,6 +22,11 @@ export interface WorkerPackOptions {
   allowRotation: boolean;
   powerOfTwo: boolean;
   forceSquare: boolean;
+  sizeMode: 'max' | 'fixed';
+  sizeConstraint: 'pot' | 'any' | 'multiple-of-4' | 'word-aligned';
+  packMode: 'fast' | 'good' | 'best';
+  commonDivisorX: number;
+  commonDivisorY: number;
   algorithm: PackingAlgorithm;
   multipack: boolean;
 }
@@ -97,6 +102,8 @@ class MaxRectsPacker {
   private borderPadding: number;
   private allowRotation: boolean;
   private algorithm: PackingAlgorithm;
+  private divisorX: number;
+  private divisorY: number;
   private freeRects: Rect[] = [];
   private usedRects: Rect[] = [];
 
@@ -107,13 +114,16 @@ class MaxRectsPacker {
     this.borderPadding = Math.max(options.borderPadding ?? 0, 0);
     this.allowRotation = options.allowRotation;
     this.algorithm = options.algorithm;
+    this.divisorX = Math.max(1, Math.floor(options.commonDivisorX || 1));
+    this.divisorY = Math.max(1, Math.floor(options.commonDivisorY || 1));
     const bp = this.borderPadding;
+    const virtualShapePadding = this.padding;
     this.freeRects = [
       {
         x: bp,
         y: bp,
-        width: Math.max(0, this.maxWidth - bp * 2),
-        height: Math.max(0, this.maxHeight - bp * 2),
+        width: Math.max(0, this.maxWidth - bp * 2 + virtualShapePadding),
+        height: Math.max(0, this.maxHeight - bp * 2 + virtualShapePadding),
       },
     ];
   }
@@ -122,8 +132,8 @@ class MaxRectsPacker {
     const sorted = items.slice().sort((a, b) => b.width * b.height - a.width * a.height);
     const out: PlacementResult[] = [];
     for (const img of sorted) {
-      const paddedW = img.width + this.padding * 2;
-      const paddedH = img.height + this.padding * 2;
+      const paddedW = img.width + this.padding;
+      const paddedH = img.height + this.padding;
       let result = this.findBestRect(paddedW, paddedH);
       let rotated = false;
       if (!result && this.allowRotation && img.width !== img.height) {
@@ -135,8 +145,8 @@ class MaxRectsPacker {
           id: img.id,
           width: img.width,
           height: img.height,
-          x: result.x + this.padding,
-          y: result.y + this.padding,
+          x: result.x,
+          y: result.y,
           rotated,
           placed: true,
         });
@@ -161,9 +171,13 @@ class MaxRectsPacker {
     let bestPrimary = Infinity;
     let bestSecondary = Infinity;
     for (const rect of this.freeRects) {
-      if (rect.width < width || rect.height < height) continue;
-      const leftoverX = rect.width - width;
-      const leftoverY = rect.height - height;
+      const x = Math.ceil(rect.x / this.divisorX) * this.divisorX;
+      const y = Math.ceil(rect.y / this.divisorY) * this.divisorY;
+      const availableWidth = rect.x + rect.width - x;
+      const availableHeight = rect.y + rect.height - y;
+      if (availableWidth < width || availableHeight < height) continue;
+      const leftoverX = availableWidth - width;
+      const leftoverY = availableHeight - height;
       let primary: number;
       let secondary: number;
       switch (this.algorithm) {
@@ -194,7 +208,7 @@ class MaxRectsPacker {
           break;
       }
       if (primary < bestPrimary || (primary === bestPrimary && secondary < bestSecondary)) {
-        best = { x: rect.x, y: rect.y, width, height };
+        best = { x, y, width, height };
         bestPrimary = primary;
         bestSecondary = secondary;
       }
@@ -203,11 +217,12 @@ class MaxRectsPacker {
   }
 
   private placeRect(rect: Rect): void {
-    const n = this.freeRects.length;
-    for (let i = 0; i < n; i++) {
+    let nodesToProcess = this.freeRects.length;
+    for (let i = 0; i < nodesToProcess; i++) {
       if (this.splitFreeNode(this.freeRects[i], rect)) {
         this.freeRects.splice(i, 1);
         i--;
+        nodesToProcess--;
       }
     }
     this.pruneFreeList();
@@ -285,7 +300,10 @@ class MaxRectsPacker {
       if (r.x + r.width > maxX) maxX = r.x + r.width;
       if (r.y + r.height > maxY) maxY = r.y + r.height;
     }
-    return { width: maxX + this.borderPadding, height: maxY + this.borderPadding };
+    return {
+      width: maxX - this.padding + this.borderPadding,
+      height: maxY - this.padding + this.borderPadding,
+    };
   }
 }
 
@@ -298,6 +316,17 @@ function nextPowerOfTwo(n: number): number {
   n |= n >> 8;
   n |= n >> 16;
   return n + 1;
+}
+
+function alignDimension(
+  value: number,
+  constraint: WorkerPackOptions['sizeConstraint'],
+): number {
+  const safe = Math.max(1, Math.ceil(value));
+  if (constraint === 'pot') return nextPowerOfTwo(safe);
+  if (constraint === 'multiple-of-4') return Math.ceil(safe / 4) * 4;
+  if (constraint === 'word-aligned') return Math.ceil(safe / 2) * 2;
+  return safe;
 }
 
 interface CancelToken {
@@ -338,14 +367,21 @@ function packWithAlgorithm(
     const bounds = packer.getUsedBounds();
     let sheetWidth = bounds.width;
     let sheetHeight = bounds.height;
-    if (options.powerOfTwo) {
-      sheetWidth = nextPowerOfTwo(sheetWidth);
-      sheetHeight = nextPowerOfTwo(sheetHeight);
-    }
+    sheetWidth = alignDimension(sheetWidth, options.sizeConstraint);
+    sheetHeight = alignDimension(sheetHeight, options.sizeConstraint);
     if (options.forceSquare) {
       const side = Math.max(sheetWidth, sheetHeight);
       sheetWidth = side;
       sheetHeight = side;
+    }
+    if (options.sizeMode === 'fixed') {
+      sheetWidth = options.maxWidth;
+      sheetHeight = options.maxHeight;
+      if (options.forceSquare) {
+        const side = Math.max(sheetWidth, sheetHeight);
+        sheetWidth = side;
+        sheetHeight = side;
+      }
     }
     sheetWidth = Math.max(sheetWidth, 1);
     sheetHeight = Math.max(sheetHeight, 1);
@@ -378,7 +414,9 @@ function handlePack(req: Extract<WorkerRequest, { kind: 'pack' }>): void {
   tokens.set(req.id, token);
   try {
     const algorithms =
-      req.options.algorithm === 'maxrects-best'
+      req.options.packMode === 'fast'
+        ? (['shelf'] as PackingAlgorithm[])
+        : req.options.packMode === 'best' || req.options.algorithm === 'maxrects-best'
         ? HEURISTICS_FOR_BEST
         : [req.options.algorithm];
 

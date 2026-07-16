@@ -10,6 +10,7 @@ interface StatusBarProps {
 interface PillInfo {
   color: string;
   label: string;
+  detail?: string;
 }
 
 export default function StatusBar({ locale }: StatusBarProps) {
@@ -30,18 +31,39 @@ export default function StatusBar({ locale }: StatusBarProps) {
   let pill: PillInfo;
   if (packError) {
     const truncated = packError.length > 40 ? `${packError.slice(0, 40)}…` : packError;
-    pill = { color: 'var(--tp-danger)', label: `Error: ${truncated}` };
+    pill = {
+      color: 'var(--tp-danger)',
+      label: `${locale === 'zh' ? '错误' : 'Error'}: ${truncated}`,
+      detail: `${packError} ${
+        locale === 'zh'
+          ? '请检查受影响的图片和打包设置，然后重试。'
+          : 'Review the affected images and packing settings, then try again.'
+      }`,
+    };
   } else if (images.length === 0) {
     pill = { color: 'var(--tp-text-dim)', label: t.status.ready };
   } else if (failedCount > 0) {
+    const names = packResult?.failed.slice(0, 5).map((item) => item.name).join(', ') ?? '';
     pill = {
       color: 'var(--tp-danger)',
       label: `${failedCount} ${t.status.failed}`,
+      detail: `${names}${failedCount > 5 ? ', …' : ''}. ${
+        locale === 'zh'
+          ? '请增大图集最大尺寸或启用 Multipack。'
+          : 'Increase the maximum atlas size or enable Multipack.'
+      }`,
     };
   } else if (exceedsMax) {
-    pill = { color: 'var(--tp-warn)', label: 'Exceeds max size' };
+    pill = {
+      color: 'var(--tp-warn)',
+      label: locale === 'zh' ? '超过最大尺寸' : 'Exceeds max size',
+      detail:
+        locale === 'zh'
+          ? '请减小图集尺寸或启用 Multipack。'
+          : 'Reduce the atlas size or enable Multipack.',
+    };
   } else {
-    pill = { color: 'var(--tp-success)', label: 'Packed' };
+    pill = { color: 'var(--tp-success)', label: t.status.packed };
   }
 
   const progressPct = Math.round(packProgress * 100);
@@ -80,7 +102,7 @@ export default function StatusBar({ locale }: StatusBarProps) {
             style={{ backgroundColor: pill.color }}
             aria-hidden
           />
-          <span>{pill.label}</span>
+          <span title={pill.detail} aria-label={pill.detail ?? pill.label}>{pill.label}</span>
         </div>
       )}
 

@@ -32,6 +32,7 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
     fileName,
     packResult,
     dirHandle,
+    settings,
     setPublishOptions,
     setExportFormat,
     showNotification,
@@ -42,6 +43,7 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
       fileName: s.fileName,
       packResult: s.packResult,
       dirHandle: s.dirHandle,
+      settings: s.settings,
       setPublishOptions: s.setPublishOptions,
       setExportFormat: s.setExportFormat,
       showNotification: s.showNotification,
@@ -49,10 +51,6 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
   );
 
   const [isPublishing, setIsPublishing] = useState(false);
-
-  const sheetCount = Math.max(1, packResult?.sheets.length ?? 0);
-  const scaleCount = Math.max(1, publishOptions.scales.length);
-  const fileCount = sheetCount * scaleCount * 2;
 
   const preview = useMemo(
     () =>
@@ -64,6 +62,9 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
       }),
     [packResult, publishOptions, exportFormat, fileName],
   );
+  const sheetCount = Math.max(1, packResult?.sheets.length ?? 0);
+  const scaleCount = Math.max(1, publishOptions.variants?.length ?? publishOptions.scales.length);
+  const fileCount = preview.images.length + preview.dataFiles.length;
 
   const toggleScale = (scale: number) => {
     const has = publishOptions.scales.includes(scale);
@@ -72,6 +73,10 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
       : [...publishOptions.scales, scale].sort((a, b) => a - b);
     setPublishOptions({ scales: next });
   };
+
+  const customVariants = publishOptions.variants;
+  const setCustomVariants = (variants: NonNullable<typeof customVariants>) =>
+    setPublishOptions({ variants });
 
   const setImageFormat = (fmt: 'png' | 'png-8' | 'jpg' | 'webp') => {
     setPublishOptions({ imageFormat: fmt });
@@ -82,7 +87,7 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
       showNotification(t.errors.noImages);
       return;
     }
-    if (publishOptions.scales.length === 0) {
+    if (publishOptions.scales.length === 0 && !publishOptions.variants?.length) {
       showNotification(t.publish.emptyScales);
       return;
     }
@@ -94,11 +99,18 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
         exportFormat,
         fileName,
         dirHandle,
+        packerOptions: settings,
       });
-      showNotification(t.publish.done.replace('{n}', String(result.files.length)));
+      const done = t.publish.done.replace('{n}', String(result.files.length));
+      showNotification(
+        result.warnings.length > 0 ? `${done} ${result.warnings.join(' ')}` : done,
+        result.warnings.length > 0 ? 8000 : 2500,
+      );
       onClose();
-    } catch {
-      showNotification(t.project.saveError);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : t.project.saveError;
+      const publishFailed = locale === 'zh' ? '发布失败' : 'Publish failed';
+      showNotification(`${publishFailed}: ${reason}`, 8000);
     } finally {
       setIsPublishing(false);
     }
@@ -263,7 +275,21 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
 
           <section>
             <span className={sectionTitleClass}>{t.publish.scales}</span>
-            <div className="flex items-center gap-3 flex-wrap">
+            <label className="mb-3 inline-flex items-center gap-2 text-xs text-[var(--tp-text)]">
+              <input
+                type="checkbox"
+                checked={Boolean(customVariants)}
+                onChange={(e) =>
+                  setPublishOptions({
+                    variants: e.target.checked
+                      ? [{ id: `variant-${Date.now()}`, name: '1x', scale: 1, suffix: '', sort: 'layout', algorithm: 'bilinear', sameLayout: true }]
+                      : undefined,
+                  })
+                }
+              />
+              {t.publish.customVariants}
+            </label>
+            {!customVariants && <div className="flex items-center gap-3 flex-wrap">
               {SUPPORTED_SCALES.map((s) => {
                 const checked = publishOptions.scales.includes(s);
                 return (
@@ -281,9 +307,48 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
                   </label>
                 );
               })}
-            </div>
-            {publishOptions.scales.length === 0 && (
+            </div>}
+            {!customVariants && publishOptions.scales.length === 0 && (
               <p className="mt-2 text-[11px] text-[var(--tp-danger)]">{t.publish.emptyScales}</p>
+            )}
+            {customVariants && (
+              <div className="space-y-3">
+                {customVariants.map((variant, index) => {
+                  const update = (patch: Partial<typeof variant>) =>
+                    setCustomVariants(customVariants.map((item, i) => i === index ? { ...item, ...patch } : item));
+                  return (
+                    <div key={variant.id} className="space-y-2 rounded-md border border-[var(--tp-border)] bg-[var(--tp-bg)] p-2">
+                      <div className="grid grid-cols-3 gap-2">
+                        <label className="text-[10px] text-[var(--tp-text-muted)]">{t.publish.variantName}<input className="tp-input mt-1" value={variant.name} onChange={(e) => update({ name: e.target.value })} /></label>
+                        <label className="text-[10px] text-[var(--tp-text-muted)]">{t.publish.variantScale}<input type="number" min={0.05} step={0.05} className="tp-input mt-1" value={variant.scale} onChange={(e) => update({ scale: Math.max(0.05, Number(e.target.value) || 1) })} /></label>
+                        <label className="text-[10px] text-[var(--tp-text-muted)]">{t.publish.variantSuffix}<input className="tp-input mt-1" value={variant.suffix} onChange={(e) => update({ suffix: e.target.value })} /></label>
+                      </div>
+                      <label className="block text-[10px] text-[var(--tp-text-muted)]">{t.publish.variantFilter}<input className="tp-input mt-1" placeholder="hero/" value={variant.filter ?? ''} onChange={(e) => update({ filter: e.target.value })} /></label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <select className="tp-input" value={variant.sort ?? 'layout'} onChange={(e) => update({ sort: e.target.value as 'layout' | 'name' | 'area' })}>
+                          <option value="layout">{t.publish.variantSort}: Layout</option>
+                          <option value="name">{t.publish.variantSort}: Name</option>
+                          <option value="area">{t.publish.variantSort}: Area</option>
+                        </select>
+                        <select className="tp-input" value={variant.algorithm ?? 'bilinear'} onChange={(e) => update({ algorithm: e.target.value as 'nearest' | 'bilinear' | 'bicubic' })}>
+                          <option value="nearest">Nearest</option>
+                          <option value="bilinear">Bilinear</option>
+                          <option value="bicubic">Bicubic</option>
+                        </select>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <input type="number" min={1} className="tp-input" aria-label={`${t.publish.variantMax} width`} placeholder="Width" value={variant.maxWidth ?? ''} onChange={(e) => update({ maxWidth: e.target.value ? Math.max(1, Number(e.target.value)) : undefined })} />
+                        <input type="number" min={1} className="tp-input" aria-label={`${t.publish.variantMax} height`} placeholder="Height" value={variant.maxHeight ?? ''} onChange={(e) => update({ maxHeight: e.target.value ? Math.max(1, Number(e.target.value)) : undefined })} />
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="inline-flex items-center gap-2 text-xs text-[var(--tp-text)]"><input type="checkbox" checked={variant.sameLayout ?? true} onChange={(e) => update({ sameLayout: e.target.checked })} />{t.publish.sameLayout}</label>
+                        <button type="button" className="tp-btn" disabled={customVariants.length <= 1} onClick={() => setCustomVariants(customVariants.filter((_, i) => i !== index))}>×</button>
+                      </div>
+                    </div>
+                  );
+                })}
+                <button type="button" className="tp-btn w-full" onClick={() => setCustomVariants([...customVariants, { id: `variant-${Date.now()}`, name: `${customVariants.length + 1}x`, scale: customVariants.length + 1, suffix: `@${customVariants.length + 1}x`, sort: 'layout', algorithm: 'bilinear', sameLayout: true }])}>{t.publish.addVariant}</button>
+              </div>
             )}
           </section>
 

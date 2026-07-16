@@ -130,6 +130,18 @@ const DATA_FORMAT_MAP: Record<string, ExportFormat> = {
   pixi: 'pixi',
   libgdx: 'libgdx',
   'cocos-creator': 'cocos-creator',
+  defold: 'defold',
+  defoldexporter: 'defold',
+  spritekit: 'spritekit',
+  unreal: 'paper2d',
+  paper2d: 'paper2d',
+  'unreal-paper2d': 'paper2d',
+  'unrealengine-paper2d': 'paper2d',
+  monogame: 'monogame',
+  'monogame-extended': 'monogame',
+  corona: 'solar2d',
+  'corona-imagesheet': 'solar2d',
+  solar2d: 'solar2d',
 };
 
 function mapDataFormat(
@@ -254,13 +266,21 @@ export function parseTpsPlist(xml: string): TpsImport {
   if (typeof settingsDict.borderPadding === 'number') {
     settings.borderPadding = settingsDict.borderPadding;
   }
-  if (typeof settingsDict.innerPadding === 'number' && settingsDict.innerPadding > 0) {
-    warnings.push('innerPadding is not supported; ignored.');
+  if (typeof settingsDict.innerPadding === 'number') {
+    settings.innerPadding = settingsDict.innerPadding;
   }
 
   const trimMode = settingsDict.trimMode;
   if (typeof trimMode === 'string') {
     settings.trimAlpha = trimMode !== 'None';
+    if (trimMode === 'None') {
+      settings.trimMode = 'none';
+    } else if (trimMode === 'Polygon') {
+      settings.trimMode = 'polygon-outline';
+      warnings.push('Polygon trim imported as polygon outline metadata; packing remains rectangular.');
+    } else {
+      settings.trimMode = 'rect';
+    }
     if (trimMode === 'Crop, keep position' || trimMode === 'CropFlush' || trimMode === 'Crop') {
       warnings.push(`Trim mode "${trimMode}" is mapped to alpha-trim (closest available).`);
     }

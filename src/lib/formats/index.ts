@@ -13,6 +13,11 @@ import gamemaker from './gamemaker';
 import pixi from './pixi';
 import libgdx from './libgdx';
 import cocosCreator from './cocosCreator';
+import defold from './defold';
+import spriteKit from './spriteKit';
+import paper2d from './paper2d';
+import monoGame from './monoGame';
+import solar2d from './solar2d';
 
 export const FORMATS: Record<ExportFormat, FormatGenerator> = {
   json: jsonHash,
@@ -28,6 +33,11 @@ export const FORMATS: Record<ExportFormat, FormatGenerator> = {
   pixi,
   libgdx,
   'cocos-creator': cocosCreator,
+  defold,
+  spritekit: spriteKit,
+  paper2d,
+  monogame: monoGame,
+  solar2d,
 };
 
 export const ALL_EXPORT_FORMATS: ExportFormat[] = [
@@ -44,6 +54,11 @@ export const ALL_EXPORT_FORMATS: ExportFormat[] = [
   'gamemaker',
   'pixi',
   'libgdx',
+  'defold',
+  'spritekit',
+  'paper2d',
+  'monogame',
+  'solar2d',
 ];
 
 export function getFormat(fmt: ExportFormat): FormatGenerator {

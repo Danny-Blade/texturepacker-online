@@ -1,3 +1,5 @@
+import type { SpriteMetadata } from './spriteMetadata';
+
 // Packing types and algorithms. Phase 3 implementations live in this file.
 export interface ImageItem {
   id: string;
@@ -6,6 +8,10 @@ export interface ImageItem {
   height: number;
   image: HTMLImageElement;
   url: string;
+  /** Hash of decoded RGBA pixels used for duplicate alias detection. */
+  contentHash?: string;
+  /** Forward-compatible per-sprite project data (pivot, 9-slice, tags, etc.). */
+  metadata?: SpriteMetadata;
 }
 
 export interface TrimInfo {
@@ -39,6 +45,8 @@ export interface PackedItem extends ImageItem {
 
 export interface PackSheet {
   index: number;
+  id?: string;
+  name?: string;
   width: number;
   height: number;
   packed: PackedItem[];
@@ -69,28 +77,61 @@ export type PackingAlgorithm =
   | 'maxrects-best'
   | 'shelf';
 
-export type TrimMode = 'none' | 'rect' | 'polygon';
+export type TrimMode =
+  | 'none'
+  | 'trim'
+  | 'crop-keep-position'
+  | 'crop-flush'
+  | 'polygon-outline'
+  /** Legacy alias migrated to `trim` when projects are loaded. */
+  | 'rect';
+
+export type SizeMode = 'max' | 'fixed';
+export type SizeConstraint = 'pot' | 'any' | 'multiple-of-4' | 'word-aligned';
+export type PackMode = 'fast' | 'good' | 'best';
+export interface ManualSheetDefinition { id: string; name: string }
 
 export interface PackerOptions {
   maxWidth: number;
   maxHeight: number;
-  padding: number;
+  /**
+   * Legacy combined padding used by projects saved before padding was split.
+   * New code must write `shapePadding`; this field is read only as a fallback.
+   */
+  padding?: number;
   /** Border padding inside the sheet edges. */
   borderPadding: number;
-  /** Padding between sprites (separate from border). */
+  /** Minimum transparent distance between sprite rectangles. */
   shapePadding: number;
+  /** Transparent pixels added to each side of the engine-visible sprite frame. */
+  innerPadding?: number;
   allowRotation: boolean;
   powerOfTwo: boolean;
   forceSquare: boolean;
+  /** Whether the configured size is a hard output size or only an upper bound. */
+  sizeMode?: SizeMode;
+  /** Output dimension alignment. `powerOfTwo` remains a legacy alias for `pot`. */
+  sizeConstraint?: SizeConstraint;
+  /** Packing effort. Best evaluates all MaxRects heuristics. */
+  packMode?: PackMode;
+  /** Top-left coordinate alignment for packed frames. */
+  commonDivisorX?: number;
+  commonDivisorY?: number;
   algorithm: PackingAlgorithm;
   trimAlpha: boolean;
   trimThreshold: number; // 0..255 alpha threshold below which a pixel is "empty"
-  /** 'none' = no trim; 'rect' = axis-aligned trim; 'polygon' = trim + tight polygon outline. */
+  /** Transparent pixels retained around the detected alpha bounds. */
+  trimMargin?: number;
+  /** Polygon outline emits mesh metadata but still uses rectangular packing. */
   trimMode: TrimMode;
   /** Tolerance for Douglas-Peucker polygon simplification, in pixels. */
   polygonTolerance: number;
   extrude: number;
   multipack: boolean;
+  multipackMode?: 'auto' | 'manual';
+  manualSheets?: ManualSheetDefinition[];
+  /** Pack byte-identical sprites once while retaining one metadata entry per name. */
+  aliasDuplicates?: boolean;
   effects?: SpriteEffects;
 }
 
@@ -113,6 +154,8 @@ export class MaxRectsPacker {
   private borderPadding: number;
   private allowRotation: boolean;
   private algorithm: PackingAlgorithm;
+  private divisorX: number;
+  private divisorY: number;
   private freeRects: Rect[] = [];
   private usedRects: Rect[] = [];
 
@@ -123,13 +166,20 @@ export class MaxRectsPacker {
     this.borderPadding = Math.max(options.borderPadding ?? 0, 0);
     this.allowRotation = options.allowRotation;
     this.algorithm = options.algorithm;
+    this.divisorX = Math.max(1, Math.floor(options.commonDivisorX ?? 1));
+    this.divisorY = Math.max(1, Math.floor(options.commonDivisorY ?? 1));
     const bp = this.borderPadding;
+    // Shape padding belongs between shapes, not between a shape and the atlas
+    // border. Extending the virtual packing area by one padding unit lets the
+    // final row/column consume its trailing reservation without reducing the
+    // usable atlas area.
+    const virtualShapePadding = this.padding;
     this.freeRects = [
       {
         x: bp,
         y: bp,
-        width: Math.max(0, this.maxWidth - bp * 2),
-        height: Math.max(0, this.maxHeight - bp * 2),
+        width: Math.max(0, this.maxWidth - bp * 2 + virtualShapePadding),
+        height: Math.max(0, this.maxHeight - bp * 2 + virtualShapePadding),
       },
     ];
   }
@@ -139,8 +189,8 @@ export class MaxRectsPacker {
     const packed: PackedItem[] = [];
 
     for (const img of sorted) {
-      const paddedW = img.width + this.padding * 2;
-      const paddedH = img.height + this.padding * 2;
+      const paddedW = img.width + this.padding;
+      const paddedH = img.height + this.padding;
 
       let result = this.findBestRect(paddedW, paddedH);
       let rotated = false;
@@ -153,8 +203,8 @@ export class MaxRectsPacker {
       if (result) {
         packed.push({
           ...img,
-          x: result.x + this.padding,
-          y: result.y + this.padding,
+          x: result.x,
+          y: result.y,
           rotated,
           placed: true,
           sheetIndex: 0,
@@ -187,9 +237,13 @@ export class MaxRectsPacker {
     let bestSecondary = Infinity;
 
     for (const rect of this.freeRects) {
-      if (rect.width < width || rect.height < height) continue;
-      const leftoverX = rect.width - width;
-      const leftoverY = rect.height - height;
+      const x = Math.ceil(rect.x / this.divisorX) * this.divisorX;
+      const y = Math.ceil(rect.y / this.divisorY) * this.divisorY;
+      const availableWidth = rect.x + rect.width - x;
+      const availableHeight = rect.y + rect.height - y;
+      if (availableWidth < width || availableHeight < height) continue;
+      const leftoverX = availableWidth - width;
+      const leftoverY = availableHeight - height;
       let primary: number;
       let secondary: number;
       switch (this.algorithm) {
@@ -220,7 +274,7 @@ export class MaxRectsPacker {
           break;
       }
       if (primary < bestPrimary || (primary === bestPrimary && secondary < bestSecondary)) {
-        best = { x: rect.x, y: rect.y, width, height };
+        best = { x, y, width, height };
         bestPrimary = primary;
         bestSecondary = secondary;
       }
@@ -229,11 +283,15 @@ export class MaxRectsPacker {
   }
 
   private placeRect(rect: Rect): void {
-    const n = this.freeRects.length;
-    for (let i = 0; i < n; i++) {
+    // Only process nodes that existed before splitting. splitFreeNode may append
+    // new nodes, while splice removes the current one; keep the loop bound in
+    // sync so an exact-fit placement never reads past the end of the list.
+    let nodesToProcess = this.freeRects.length;
+    for (let i = 0; i < nodesToProcess; i++) {
       if (this.splitFreeNode(this.freeRects[i], rect)) {
         this.freeRects.splice(i, 1);
         i--;
+        nodesToProcess--;
       }
     }
     this.pruneFreeList();
@@ -311,7 +369,10 @@ export class MaxRectsPacker {
       if (r.x + r.width > maxX) maxX = r.x + r.width;
       if (r.y + r.height > maxY) maxY = r.y + r.height;
     }
-    return { width: maxX + this.borderPadding, height: maxY + this.borderPadding };
+    return {
+      width: maxX - this.padding + this.borderPadding,
+      height: maxY - this.padding + this.borderPadding,
+    };
   }
 }
 
@@ -324,6 +385,18 @@ export function nextPowerOfTwo(n: number): number {
   n |= n >> 8;
   n |= n >> 16;
   return n + 1;
+}
+
+function alignDimension(value: number, constraint: SizeConstraint): number {
+  const safe = Math.max(1, Math.ceil(value));
+  if (constraint === 'pot') return nextPowerOfTwo(safe);
+  if (constraint === 'multiple-of-4') return Math.ceil(safe / 4) * 4;
+  if (constraint === 'word-aligned') return Math.ceil(safe / 2) * 2;
+  return safe;
+}
+
+function resolveSizeConstraint(options: PackerOptions): SizeConstraint {
+  return options.sizeConstraint ?? (options.powerOfTwo ? 'pot' : 'any');
 }
 
 /**
@@ -374,9 +447,109 @@ export function packIntoSheets(
     return { sheets: [], failed: [], packed: [], width: 0, height: 0 };
   }
 
+  if (options.aliasDuplicates) {
+    const representatives: ImageItem[] = [];
+    const aliasesByRepresentative = new Map<string, ImageItem[]>();
+    const representativeByKey = new Map<string, ImageItem>();
+    for (const item of items) {
+      const key = `${item.width}x${item.height}:${item.contentHash ?? item.url}`;
+      const representative = representativeByKey.get(key);
+      if (!representative) {
+        representativeByKey.set(key, item);
+        representatives.push(item);
+      } else {
+        const aliases = aliasesByRepresentative.get(representative.id) ?? [];
+        aliases.push(item);
+        aliasesByRepresentative.set(representative.id, aliases);
+      }
+    }
+    if (representatives.length !== items.length) {
+      const base = packIntoSheets(
+        representatives,
+        { ...options, aliasDuplicates: false },
+        prepare,
+      );
+      const expand = (packed: PackedItem): PackedItem[] => [
+        packed,
+        ...(aliasesByRepresentative.get(packed.id) ?? []).map((alias) => ({
+          ...packed,
+          ...alias,
+          x: packed.x,
+          y: packed.y,
+          width: packed.width,
+          height: packed.height,
+          rotated: packed.rotated,
+          placed: packed.placed,
+          sheetIndex: packed.sheetIndex,
+          trimmed: packed.trimmed,
+          sourceSize: packed.sourceSize,
+          spriteSourceSize: packed.spriteSourceSize,
+          pixelSource: packed.pixelSource,
+          extrudePadding: packed.extrudePadding,
+          polygon: packed.polygon,
+        })),
+      ];
+      const sheets = base.sheets.map((sheet) => ({
+        ...sheet,
+        packed: sheet.packed.flatMap(expand),
+      }));
+      const failed = base.failed.flatMap(expand);
+      return {
+        ...base,
+        sheets,
+        failed,
+        packed: sheets[0]?.packed ?? [],
+      };
+    }
+  }
+
+  if (options.multipackMode === 'manual' && (options.manualSheets?.length ?? 0) > 0) {
+    const definitions = options.manualSheets!;
+    const known = new Set(definitions.map((sheet) => sheet.id));
+    const fallbackId = definitions[0].id;
+    const allSheets: PackSheet[] = [];
+    const failed: PackedItem[] = [];
+    for (const definition of definitions) {
+      const group = items.filter((item) => {
+        const assigned = item.metadata?.manualSheetId;
+        const effective = typeof assigned === 'string' && known.has(assigned) ? assigned : fallbackId;
+        return effective === definition.id;
+      });
+      if (group.length === 0) continue;
+      const result = packIntoSheets(group, {
+        ...options,
+        multipack: false,
+        multipackMode: 'auto',
+      }, prepare);
+      for (const sheet of result.sheets) {
+        const index = allSheets.length;
+        allSheets.push({
+          ...sheet,
+          index,
+          id: definition.id,
+          name: definition.name,
+          packed: sheet.packed.map((item) => ({ ...item, sheetIndex: index })),
+        });
+      }
+      failed.push(...result.failed);
+    }
+    const primary = allSheets[0];
+    return {
+      sheets: allSheets,
+      failed,
+      packed: primary?.packed ?? [],
+      width: primary?.width ?? 0,
+      height: primary?.height ?? 0,
+    };
+  }
+
   // Resolve heuristic (Best = try several, pick smallest total atlas area).
   const algorithmsToTry =
-    options.algorithm === 'maxrects-best' ? HEURISTICS_FOR_BEST : [options.algorithm];
+    options.packMode === 'fast'
+      ? (['shelf'] as PackingAlgorithm[])
+      : options.packMode === 'best' || options.algorithm === 'maxrects-best'
+      ? HEURISTICS_FOR_BEST
+      : [options.algorithm];
 
   let bestResult: PackResult | null = null;
   let bestScore = Infinity;
@@ -450,14 +623,22 @@ function packWithAlgorithm(
     const bounds = packer.getUsedBounds();
     let sheetWidth = bounds.width;
     let sheetHeight = bounds.height;
-    if (options.powerOfTwo) {
-      sheetWidth = nextPowerOfTwo(sheetWidth);
-      sheetHeight = nextPowerOfTwo(sheetHeight);
-    }
+    const sizeConstraint = resolveSizeConstraint(options);
+    sheetWidth = alignDimension(sheetWidth, sizeConstraint);
+    sheetHeight = alignDimension(sheetHeight, sizeConstraint);
     if (options.forceSquare) {
       const side = Math.max(sheetWidth, sheetHeight);
       sheetWidth = side;
       sheetHeight = side;
+    }
+    if (options.sizeMode === 'fixed') {
+      sheetWidth = options.maxWidth;
+      sheetHeight = options.maxHeight;
+      if (options.forceSquare) {
+        const side = Math.max(sheetWidth, sheetHeight);
+        sheetWidth = side;
+        sheetHeight = side;
+      }
     }
     sheetWidth = Math.max(sheetWidth, 1);
     sheetHeight = Math.max(sheetHeight, 1);
@@ -538,7 +719,12 @@ export type ExportFormat =
   | 'gamemaker'
   | 'pixi'
   | 'libgdx'
-  | 'cocos-creator';
+  | 'cocos-creator'
+  | 'defold'
+  | 'spritekit'
+  | 'paper2d'
+  | 'monogame'
+  | 'solar2d';
 
 // Format dispatch lives in lib/formats. Re-export it here for legacy import paths.
 export { generateExportData } from './formats';

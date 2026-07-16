@@ -1,13 +1,14 @@
 'use client';
 
 import { prepareSpriteForAtlas } from './imageProcessing';
-import type {
-  ImageItem,
-  PackedItem,
-  PackerOptions,
-  PackResult,
-  PackSheet,
-  PreparedSprite,
+import {
+  packIntoSheets,
+  type ImageItem,
+  type PackedItem,
+  type PackerOptions,
+  type PackResult,
+  type PackSheet,
+  type PreparedSprite,
 } from './packer';
 
 type PackingAlgorithm = PackerOptions['algorithm'];
@@ -20,6 +21,11 @@ interface WorkerPackOptions {
   allowRotation: boolean;
   powerOfTwo: boolean;
   forceSquare: boolean;
+  sizeMode: 'max' | 'fixed';
+  sizeConstraint: 'pot' | 'any' | 'multiple-of-4' | 'word-aligned';
+  packMode: 'fast' | 'good' | 'best';
+  commonDivisorX: number;
+  commonDivisorY: number;
   algorithm: PackingAlgorithm;
   multipack: boolean;
 }
@@ -68,15 +74,47 @@ interface PendingJob {
   items: ImageItem[];
   options: PackerOptions;
   settled: boolean;
+  timeoutId?: number;
 }
 
 let worker: Worker | null = null;
 let nextRequestId = 1;
 const pending = new Map<number, PendingJob>();
+const WORKER_TIMEOUT_MS = 8_000;
+
+function clearJobTimeout(job: PendingJob): void {
+  if (job.timeoutId !== undefined) {
+    window.clearTimeout(job.timeoutId);
+    job.timeoutId = undefined;
+  }
+}
+
+function settleWithSyncFallback(id: number, job: PendingJob): void {
+  if (job.settled) return;
+  job.settled = true;
+  clearJobTimeout(job);
+  pending.delete(id);
+  try {
+    const result = packIntoSheets(job.items, job.options, prepareSpriteForAtlas);
+    job.onProgress?.(1);
+    job.resolve(result);
+  } catch (error) {
+    job.reject(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
+function resetWorkerAndFallbackPending(): void {
+  if (worker) worker.terminate();
+  worker = null;
+  for (const [id, job] of Array.from(pending)) settleWithSyncFallback(id, job);
+}
 
 function ensureWorker(): Worker {
   if (worker) return worker;
-  const w = new Worker(new URL('./packer.worker.ts', import.meta.url), { type: 'module' });
+  // Turbopack currently emits a `new URL('./*.worker.ts', import.meta.url)`
+  // target as raw TypeScript media and strips the module worker option. Serve
+  // an explicitly compiled ES module instead so every browser executes JS.
+  const w = new Worker('/packer.worker.js', { type: 'module' });
   w.addEventListener('message', (event: MessageEvent<WorkerResponse>) => {
     const msg = event.data;
     const job = pending.get(msg.id);
@@ -87,25 +125,17 @@ function ensureWorker(): Worker {
     }
     if (msg.kind === 'done') {
       job.settled = true;
+      clearJobTimeout(job);
       pending.delete(msg.id);
       job.resolve(buildPackResult(msg.sheets, msg.failedIds, job));
       return;
     }
     if (msg.kind === 'error') {
-      job.settled = true;
-      pending.delete(msg.id);
-      job.reject(new Error(msg.message));
+      settleWithSyncFallback(msg.id, job);
     }
   });
-  w.addEventListener('error', (event) => {
-    for (const [, job] of pending) {
-      if (!job.settled) {
-        job.settled = true;
-        job.reject(new Error(event.message || 'worker error'));
-      }
-    }
-    pending.clear();
-  });
+  w.addEventListener('error', () => resetWorkerAndFallbackPending());
+  w.addEventListener('messageerror', () => resetWorkerAndFallbackPending());
   worker = w;
   return w;
 }
@@ -115,10 +145,15 @@ function toWorkerOptions(options: PackerOptions): WorkerPackOptions {
     maxWidth: options.maxWidth,
     maxHeight: options.maxHeight,
     borderPadding: options.borderPadding,
-    shapePadding: options.shapePadding,
+    shapePadding: options.shapePadding ?? options.padding ?? 0,
     allowRotation: options.allowRotation,
     powerOfTwo: options.powerOfTwo,
     forceSquare: options.forceSquare,
+    sizeMode: options.sizeMode ?? 'max',
+    sizeConstraint: options.sizeConstraint ?? (options.powerOfTwo ? 'pot' : 'any'),
+    packMode: options.packMode ?? 'good',
+    commonDivisorX: Math.max(1, Math.floor(options.commonDivisorX ?? 1)),
+    commonDivisorY: Math.max(1, Math.floor(options.commonDivisorY ?? 1)),
     algorithm: options.algorithm,
     multipack: options.multipack,
   };
@@ -222,6 +257,16 @@ export function packAsync(
   if (typeof window === 'undefined') {
     return { promise: Promise.resolve(emptyResult()), cancel: () => {} };
   }
+  if (options.multipackMode === 'manual' || options.aliasDuplicates) {
+    return {
+      promise: Promise.resolve().then(() => {
+        const result = packIntoSheets(images, options, prepareSpriteForAtlas);
+        onProgress?.(1);
+        return result;
+      }),
+      cancel: () => {},
+    };
+  }
 
   const id = nextRequestId++;
   const prepared = new Map<string, PreparedSprite>();
@@ -260,15 +305,17 @@ export function packAsync(
       options: toWorkerOptions(options),
     };
     w.postMessage(request);
-  } catch (err) {
-    job.settled = true;
-    pending.delete(id);
-    reject(err instanceof Error ? err : new Error(String(err)));
+    job.timeoutId = window.setTimeout(() => {
+      if (!job.settled) resetWorkerAndFallbackPending();
+    }, WORKER_TIMEOUT_MS);
+  } catch {
+    settleWithSyncFallback(id, job);
   }
 
   const cancel = (): void => {
     if (job.settled) return;
     job.settled = true;
+    clearJobTimeout(job);
     pending.delete(id);
     if (worker) {
       const cancelMsg: WorkerRequest = { kind: 'cancel', id };

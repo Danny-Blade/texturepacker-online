@@ -1,10 +1,12 @@
 import type { FormatGenerator } from './types';
+import { readSpriteMetadata, resolvePivot, scaleInsets } from '../spriteMetadata';
 
 const cocos2d: FormatGenerator = {
   extension: 'plist',
   label: 'Cocos2d',
   generate(sheet, opts) {
     const image = opts.imageFileName(sheet.index);
+    const scale = opts.scale ?? 1;
     let out = '<?xml version="1.0" encoding="UTF-8"?>\n';
     out += '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n';
     out += '<plist version="1.0">\n<dict>\n';
@@ -30,6 +32,25 @@ const cocos2d: FormatGenerator = {
       out += `      <string>{{${item.spriteSourceSize.x},${item.spriteSourceSize.y}},{${item.spriteSourceSize.w},${item.spriteSourceSize.h}}}</string>\n`;
       out += `      <key>sourceSize</key>\n`;
       out += `      <string>{${item.sourceSize.w},${item.sourceSize.h}}</string>\n`;
+      const metadata = readSpriteMetadata(item.metadata);
+      if (metadata.pivot) {
+        const pivot = resolvePivot(
+          metadata,
+          item.sourceSize.w / scale,
+          item.sourceSize.h / scale,
+        ).normalized;
+        out += `      <key>anchor</key>\n      <string>{${pivot.x},${pivot.y}}</string>\n`;
+      }
+      if (metadata.nineSlice) {
+        const border = scaleInsets(metadata.nineSlice.border, scale);
+        const content = scaleInsets(metadata.nineSlice.content, scale);
+        const centerW = Math.max(0, item.sourceSize.w - border.left - border.right);
+        const centerH = Math.max(0, item.sourceSize.h - border.top - border.bottom);
+        const contentW = Math.max(0, item.sourceSize.w - content.left - content.right);
+        const contentH = Math.max(0, item.sourceSize.h - content.top - content.bottom);
+        out += `      <key>capInsets</key>\n      <string>{{${border.left},${border.bottom}},{${centerW},${centerH}}}</string>\n`;
+        out += `      <key>contentRect</key>\n      <string>{{${content.left},${content.bottom}},{${contentW},${contentH}}}</string>\n`;
+      }
       out += '    </dict>\n';
     }
     out += '  </dict>\n';

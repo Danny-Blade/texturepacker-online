@@ -1,0 +1,30 @@
+{
+  "texture": "atlas-3@2x.png",
+  "sprites": [
+    {
+      "name": "hero&boss.png",
+      "rect": {
+        "x": 14,
+        "y": 54,
+        "width": 12,
+        "height": 20
+      },
+      "pivot": {
+        "x": 0.5,
+        "y": 0.5
+      },
+      "border": {
+        "x": 0,
+        "y": 0,
+        "z": 0,
+        "w": 0
+      },
+      "rotated": true,
+      "trimmed": true
+    }
+  ],
+  "size": {
+    "w": 128,
+    "h": 96
+  }
+}

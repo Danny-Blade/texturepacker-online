@@ -193,9 +193,11 @@ function makeTransparent1x1(): HTMLCanvasElement {
 }
 
 /**
- * Bake trim + extrude into a fresh canvas usable as a drawImage source.
+ * Bake trim + inner padding + extrude into a fresh canvas usable as a
+ * drawImage source.
  *
  * - PreparedSprite.width/height are the *inner* (engine-visible) frame size.
+ * - `innerPadding` extends that frame with transparent pixels on every side.
  * - When `extrude > 0`, pixelSource is a (width + 2*ex) × (height + 2*ex)
  *   canvas with the 1-px edges stretched into a halo.
  * - When the source image is fully transparent under the threshold, we return a
@@ -203,14 +205,17 @@ function makeTransparent1x1(): HTMLCanvasElement {
  */
 export function prepareSpriteForAtlas(item: ImageItem, options: PackerOptions): PreparedSprite {
   const ex = Math.max(0, Math.floor(options.extrude ?? 0));
+  const ip = Math.max(0, Math.floor(options.innerPadding ?? 0));
   const threshold = Math.max(0, Math.min(255, Math.floor(options.trimThreshold ?? 1)));
-  const trimMode = options.trimMode ?? (options.trimAlpha ? 'rect' : 'none');
-  // Polygon mode implies alpha trim. None disables trim.
+  const requestedTrimMode = options.trimMode ?? (options.trimAlpha ? 'trim' : 'none');
+  const trimMode = requestedTrimMode === 'rect' ? 'trim' : requestedTrimMode;
+  const trimMargin = Math.max(0, Math.floor(options.trimMargin ?? 0));
+  // Polygon outline mode implies alpha trim. It does not change the rectangular packer.
   const effectiveTrim = trimMode !== 'none';
   const polyTol = Math.max(0, Number(options.polygonTolerance ?? 2));
-  const wantPolygon = trimMode === 'polygon';
+  const wantPolygon = trimMode === 'polygon-outline';
   const fxKey = effectsKey(options.effects);
-  const cacheKey = `${item.image.src}|t:${effectiveTrim ? 1 : 0}|th:${threshold}|ex:${ex}|tm:${trimMode}|pt:${wantPolygon ? polyTol : 0}|fx:${fxKey}`;
+  const cacheKey = `${item.image.src}|t:${effectiveTrim ? 1 : 0}|th:${threshold}|m:${trimMargin}|ip:${ip}|ex:${ex}|tm:${trimMode}|pt:${wantPolygon ? polyTol : 0}|fx:${fxKey}`;
   const cached = preparedCache.get(cacheKey);
   if (cached) {
     if (cached.item === item) return cached;
@@ -239,45 +244,69 @@ export function prepareSpriteForAtlas(item: ImageItem, options: PackerOptions): 
       sy = 0;
       sw = 1;
       sh = 1;
-    } else if (bounds.w !== fullW || bounds.h !== fullH || bounds.x !== 0 || bounds.y !== 0) {
-      sx = bounds.x;
-      sy = bounds.y;
-      sw = bounds.w;
-      sh = bounds.h;
-      trimmed = true;
+    } else {
+      const left = Math.max(0, bounds.x - trimMargin);
+      const top = Math.max(0, bounds.y - trimMargin);
+      const right = Math.min(fullW, bounds.x + bounds.w + trimMargin);
+      const bottom = Math.min(fullH, bounds.y + bounds.h + trimMargin);
+      sx = left;
+      sy = top;
+      sw = right - left;
+      sh = bottom - top;
+      if (sw !== fullW || sh !== fullH || sx !== 0 || sy !== 0) trimmed = true;
     }
   }
 
+  const cropFlush = trimMode === 'crop-flush';
   const trim: TrimInfo = {
     trimmed,
-    sourceSize: { w: fullW, h: fullH },
-    spriteSourceSize: { x: sx, y: sy, w: sw, h: sh },
+    sourceSize: cropFlush
+      ? { w: sw + ip * 2, h: sh + ip * 2 }
+      : { w: fullW + ip * 2, h: fullH + ip * 2 },
+    spriteSourceSize: cropFlush
+      ? { x: ip, y: ip, w: sw, h: sh }
+      : { x: sx + ip, y: sy + ip, w: sw, h: sh },
   };
 
-  let pixelSource: CanvasImageSource;
+  // First isolate the visible source pixels. Inner padding is deliberately
+  // transparent and part of the exported sprite frame; unlike extrusion it is
+  // represented in frame metadata.
+  let frameSource: CanvasImageSource;
   if (fullyEmpty) {
-    pixelSource = ex > 0 ? buildExtrudedCanvas(makeTransparent1x1(), 0, 0, 1, 1, ex) : makeTransparent1x1();
-  } else if (ex > 0) {
-    pixelSource = buildExtrudedCanvas(item.image, sx, sy, sw, sh, ex);
+    frameSource = makeTransparent1x1();
   } else if (trimmed) {
-    // Trim-only: bake the trimmed region into its own canvas so downstream
-    // drawImage doesn't have to re-clip every time.
     const canvas = document.createElement('canvas');
     canvas.width = sw;
     canvas.height = sh;
     const ctx = canvas.getContext('2d');
     if (ctx) ctx.drawImage(item.image, sx, sy, sw, sh, 0, 0, sw, sh);
-    pixelSource = canvas;
+    frameSource = canvas;
   } else {
-    pixelSource = item.image;
+    frameSource = item.image;
   }
+
+  const frameW = sw + ip * 2;
+  const frameH = sh + ip * 2;
+  if (ip > 0) {
+    const padded = document.createElement('canvas');
+    padded.width = frameW;
+    padded.height = frameH;
+    const ctx = padded.getContext('2d');
+    // A newly created canvas is transparent; drawing only the center is what
+    // makes innerPadding a pixel operation instead of another layout gap.
+    if (ctx) ctx.drawImage(frameSource, ip, ip, sw, sh);
+    frameSource = padded;
+  }
+
+  let pixelSource: CanvasImageSource =
+    ex > 0 ? buildExtrudedCanvas(frameSource, 0, 0, frameW, frameH, ex) : frameSource;
 
   let polygon: SpritePolygon | undefined;
   if (wantPolygon && !fullyEmpty) {
     const raw = computePolygonOutline(item.image, threshold, polyTol);
     if (raw && raw.length >= 6) {
-      // Translate to trimmed-sprite coordinates (relative to trimmed top-left).
-      polygon = offsetPolygon(raw, sx, sy);
+      // Translate to padded frame coordinates (relative to the frame top-left).
+      polygon = offsetPolygon(raw, sx - ip, sy - ip);
     }
   }
 
@@ -289,8 +318,8 @@ export function prepareSpriteForAtlas(item: ImageItem, options: PackerOptions): 
   // sprite — slightly more than the strict asymmetric extent, but correct.
   let effectExtrudeExtra = 0;
   if (!fullyEmpty && hasAnyEffect(options.effects)) {
-    const innerW = sw + ex * 2;
-    const innerH = sh + ex * 2;
+    const innerW = frameW + ex * 2;
+    const innerH = frameH + ex * 2;
     const applied = applySpriteEffects(pixelSource, innerW, innerH, options.effects);
     if (applied.canvas !== pixelSource) {
       const ext = applied.expand;
@@ -325,8 +354,8 @@ export function prepareSpriteForAtlas(item: ImageItem, options: PackerOptions): 
     item,
     trim,
     pixelSource,
-    width: sw,
-    height: sh,
+    width: frameW,
+    height: frameH,
     extrudePadding: totalExtrude > 0 ? totalExtrude : undefined,
     polygon,
   };

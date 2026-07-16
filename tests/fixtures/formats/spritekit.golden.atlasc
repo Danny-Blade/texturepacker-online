@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>frames</key>
+  <dict>
+    <key>hero&amp;boss.png</key>
+    <dict>
+      <key>aliases</key>
+      <array/>
+      <key>spriteOffset</key>
+      <string>{-2,2}</string>
+      <key>spriteSize</key>
+      <string>{20,12}</string>
+      <key>spriteSourceSize</key>
+      <string>{32,28}</string>
+      <key>textureRect</key>
+      <string>{{14,22},{20,12}}</string>
+      <key>textureRotated</key>
+      <true/>
+    </dict>
+  </dict>
+  <key>metadata</key>
+  <dict>
+    <key>format</key>
+    <integer>3</integer>
+    <key>pixelFormat</key>
+    <string>RGBA8888</string>
+    <key>premultiplyAlpha</key>
+    <false/>
+    <key>realTextureFileName</key>
+    <string>atlas-3@2x.png</string>
+    <key>size</key>
+    <string>{128,96}</string>
+    <key>textureFileName</key>
+    <string>atlas-3@2x.png</string>
+  </dict>
+</dict>
+</plist>

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
+import SpriteMetadataEditor from './SpriteMetadataEditor';
 import { getTranslations } from '@/lib/i18n';
 import { useTpStore, type BackgroundMode, type InspectorSectionState } from '@/lib/store';
 import { summarizeSelection } from '@/lib/spriteTree';
@@ -131,17 +132,19 @@ function ToggleRow({ label, value, onChange }: ToggleRowProps) {
 interface TrimSegmentedProps {
   value: TrimMode;
   onChange: (m: TrimMode) => void;
-  labels: { none: string; rect: string; polygon: string };
+  labels: { none: string; trim: string; cropKeep: string; cropFlush: string; outline: string };
 }
 
 function TrimSegmented({ value, onChange, labels }: TrimSegmentedProps) {
   const modes: { key: TrimMode; label: string }[] = [
     { key: 'none', label: labels.none },
-    { key: 'rect', label: labels.rect },
-    { key: 'polygon', label: labels.polygon },
+    { key: 'trim', label: labels.trim },
+    { key: 'crop-keep-position', label: labels.cropKeep },
+    { key: 'crop-flush', label: labels.cropFlush },
+    { key: 'polygon-outline', label: labels.outline },
   ];
   return (
-    <div className="grid grid-cols-3 gap-0 rounded-md border border-[var(--tp-border)] bg-[var(--tp-bg)] p-0.5">
+    <div className="grid grid-cols-1 gap-0.5 rounded-md border border-[var(--tp-border)] bg-[var(--tp-bg)] p-0.5">
       {modes.map((m) => {
         const active = value === m.key;
         return (
@@ -884,6 +887,7 @@ export default function Inspector({ locale }: InspectorProps) {
   const renamingId = useTpStore((s) => s.renamingId);
   const selectImages = useTpStore((s) => s.selectImages);
   const removeImages = useTpStore((s) => s.removeImages);
+  const updateSpriteMetadata = useTpStore((s) => s.updateSpriteMetadata);
 
   const selected = useMemo(() => {
     const set = new Set(selectedIds);
@@ -949,10 +953,26 @@ export default function Inspector({ locale }: InspectorProps) {
     [setSettings],
   );
 
-  const onPaddingChange = useCallback(
+  const onBorderPaddingChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const v = Math.max(0, Math.min(32, Number(e.target.value) || 0));
-      setSettings({ padding: v });
+      setSettings({ borderPadding: v });
+    },
+    [setSettings],
+  );
+
+  const onShapePaddingChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const v = Math.max(0, Math.min(32, Number(e.target.value) || 0));
+      setSettings({ shapePadding: v });
+    },
+    [setSettings],
+  );
+
+  const onInnerPaddingChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const v = Math.max(0, Math.min(32, Number(e.target.value) || 0));
+      setSettings({ innerPadding: v });
     },
     [setSettings],
   );
@@ -1044,6 +1064,48 @@ export default function Inspector({ locale }: InspectorProps) {
           </select>
         </Field>
 
+        <Field label={t.inspector.packMode}>
+          <select
+            className="tp-input"
+            value={settings.packMode ?? 'good'}
+            onChange={(e) =>
+              setSettings({ packMode: e.target.value as 'fast' | 'good' | 'best' })
+            }
+          >
+            <option value="fast">{t.inspector.packFast}</option>
+            <option value="good">{t.inspector.packGood}</option>
+            <option value="best">{t.inspector.packBest}</option>
+          </select>
+        </Field>
+
+        <Field label={t.inspector.sizeMode}>
+          <select
+            className="tp-input"
+            value={settings.sizeMode ?? 'max'}
+            onChange={(e) => setSettings({ sizeMode: e.target.value as 'max' | 'fixed' })}
+          >
+            <option value="max">{t.inspector.sizeModeMax}</option>
+            <option value="fixed">{t.inspector.sizeModeFixed}</option>
+          </select>
+        </Field>
+
+        <Field label={t.inspector.sizeConstraint}>
+          <select
+            className="tp-input"
+            value={settings.sizeConstraint ?? (settings.powerOfTwo ? 'pot' : 'any')}
+            onChange={(e) =>
+              setSettings({
+                sizeConstraint: e.target.value as 'pot' | 'any' | 'multiple-of-4' | 'word-aligned',
+              })
+            }
+          >
+            <option value="pot">{t.inspector.powerOfTwo}</option>
+            <option value="any">{t.inspector.sizeAny}</option>
+            <option value="multiple-of-4">{t.inspector.sizeMultiple4}</option>
+            <option value="word-aligned">{t.inspector.sizeWordAligned}</option>
+          </select>
+        </Field>
+
         <div>
           <div className="tp-label mb-1.5">{t.inspector.maxSize}</div>
           <div className="grid grid-cols-2 gap-2">
@@ -1082,14 +1144,36 @@ export default function Inspector({ locale }: InspectorProps) {
           </div>
         </div>
 
-        <Field label={t.inspector.padding}>
+        <Field label={t.inspector.borderPadding}>
           <input
             type="number"
             min={0}
             max={32}
             className="tp-input tp-num"
-            value={settings.padding}
-            onChange={onPaddingChange}
+            value={settings.borderPadding}
+            onChange={onBorderPaddingChange}
+          />
+        </Field>
+
+        <Field label={t.inspector.shapePadding}>
+          <input
+            type="number"
+            min={0}
+            max={32}
+            className="tp-input tp-num"
+            value={settings.shapePadding}
+            onChange={onShapePaddingChange}
+          />
+        </Field>
+
+        <Field label={t.inspector.innerPadding}>
+          <input
+            type="number"
+            min={0}
+            max={32}
+            className="tp-input tp-num"
+            value={settings.innerPadding ?? 0}
+            onChange={onInnerPaddingChange}
           />
         </Field>
 
@@ -1110,10 +1194,126 @@ export default function Inspector({ locale }: InspectorProps) {
           onChange={(v) => setSettings({ allowRotation: v })}
         />
         <ToggleRow
-          label={t.inspector.powerOfTwo}
-          value={settings.powerOfTwo}
-          onChange={(v) => setSettings({ powerOfTwo: v })}
+          label={t.inspector.forceSquare}
+          value={settings.forceSquare}
+          onChange={(v) => setSettings({ forceSquare: v })}
         />
+        <ToggleRow
+          label={t.inspector.multipack}
+          value={settings.multipack}
+          onChange={(v) => setSettings({ multipack: v })}
+        />
+        <Field label={t.inspector.multipackMode}>
+          <select
+            className="tp-input"
+            value={settings.multipackMode ?? 'auto'}
+            onChange={(e) =>
+              setSettings({
+                multipack: true,
+                multipackMode: e.target.value as 'auto' | 'manual',
+              })
+            }
+          >
+            <option value="auto">{t.inspector.multipackAuto}</option>
+            <option value="manual">{t.inspector.multipackManual}</option>
+          </select>
+        </Field>
+        {settings.multipackMode === 'manual' && (
+          <div className="space-y-2 rounded-md border border-[var(--tp-border)] bg-[var(--tp-bg)] p-2">
+            <div className="tp-label">{t.inspector.manualSheets}</div>
+            {(settings.manualSheets ?? []).map((sheet) => (
+              <div key={sheet.id} className="flex items-center gap-1">
+                <span className="min-w-0 flex-1 truncate text-xs text-[var(--tp-text)]">{sheet.name}</span>
+                <button
+                  type="button"
+                  className="tp-btn h-6 px-2 text-[10px]"
+                  onClick={() => {
+                    const name = window.prompt(t.inspector.renameSheet, sheet.name)?.trim();
+                    if (!name) return;
+                    setSettings({
+                      manualSheets: (settings.manualSheets ?? []).map((item) =>
+                        item.id === sheet.id ? { ...item, name } : item),
+                    });
+                  }}
+                >
+                  {t.inspector.renameSheet}
+                </button>
+                <button
+                  type="button"
+                  className="tp-btn h-6 px-2 text-[10px]"
+                  disabled={(settings.manualSheets?.length ?? 0) <= 1}
+                  onClick={() =>
+                    setSettings({
+                      manualSheets: (settings.manualSheets ?? []).filter((item) => item.id !== sheet.id),
+                    })
+                  }
+                >
+                  {t.inspector.deleteSheet}
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="tp-btn w-full text-xs"
+              onClick={() => {
+                const sheets = settings.manualSheets ?? [];
+                const name = window.prompt(t.inspector.addSheet, `Sheet ${sheets.length + 1}`)?.trim();
+                if (!name) return;
+                setSettings({
+                  manualSheets: [...sheets, { id: `sheet-${Date.now()}`, name }],
+                });
+              }}
+            >
+              {t.inspector.addSheet}
+            </button>
+            {selectedIds.length > 0 && (settings.manualSheets?.length ?? 0) > 0 && (
+              <Field label={t.inspector.assignSheet}>
+                <select
+                  className="tp-input"
+                  value={
+                    selected.length > 0 && selected.every((item) =>
+                      item.metadata?.manualSheetId === selected[0].metadata?.manualSheetId)
+                      ? selected[0].metadata?.manualSheetId ?? settings.manualSheets?.[0]?.id
+                      : ''
+                  }
+                  onChange={(e) => updateSpriteMetadata(selectedIds, { manualSheetId: e.target.value })}
+                >
+                  <option value="" disabled>—</option>
+                  {(settings.manualSheets ?? []).map((sheet) => (
+                    <option key={sheet.id} value={sheet.id}>{sheet.name}</option>
+                  ))}
+                </select>
+              </Field>
+            )}
+          </div>
+        )}
+        <ToggleRow
+          label={t.inspector.aliasDuplicates}
+          value={settings.aliasDuplicates ?? false}
+          onChange={(value) => setSettings({ aliasDuplicates: value })}
+        />
+        <div className="grid grid-cols-2 gap-2">
+          <Field label={t.inspector.commonDivisorX}>
+            <input
+              type="number"
+              min={1}
+              max={256}
+              className="tp-input tp-num"
+              value={settings.commonDivisorX ?? 1}
+              onChange={(e) => setSettings({ commonDivisorX: Math.max(1, Number(e.target.value) || 1) })}
+            />
+          </Field>
+          <Field label={t.inspector.commonDivisorY}>
+            <input
+              type="number"
+              min={1}
+              max={256}
+              className="tp-input tp-num"
+              value={settings.commonDivisorY ?? 1}
+              onChange={(e) => setSettings({ commonDivisorY: Math.max(1, Number(e.target.value) || 1) })}
+            />
+          </Field>
+        </div>
         <div>
           <div className="tp-label mb-1.5">{t.inspector.trimMode}</div>
           <TrimSegmented
@@ -1123,11 +1323,28 @@ export default function Inspector({ locale }: InspectorProps) {
             }
             labels={{
               none: t.inspector.trimNone,
-              rect: t.inspector.trimRect,
-              polygon: t.inspector.trimPolygon,
+              trim: t.inspector.trimStandard,
+              cropKeep: t.inspector.cropKeepPosition,
+              cropFlush: t.inspector.cropFlush,
+              outline: t.inspector.trimPolygon,
             }}
           />
-          {settings.trimMode === 'polygon' && (
+          {settings.trimMode !== 'none' && (
+            <div className="mt-2">
+              <div className="tp-label mb-1.5">{t.inspector.trimMargin}</div>
+              <input
+                type="number"
+                min={0}
+                max={64}
+                className="tp-input tp-num"
+                value={settings.trimMargin ?? 0}
+                onChange={(e) =>
+                  setSettings({ trimMargin: Math.max(0, Math.floor(Number(e.target.value) || 0)) })
+                }
+              />
+            </div>
+          )}
+          {settings.trimMode === 'polygon-outline' && (
             <div className="mt-2">
               <div className="tp-label mb-1.5">{t.inspector.polygonTolerance}</div>
               <input
@@ -1264,6 +1481,7 @@ export default function Inspector({ locale }: InspectorProps) {
             }}
           />
         )}
+        {selected.length > 0 && <SpriteMetadataEditor locale={locale} sprites={selected} />}
       </Section>
 
       {images.length === 0 && !packResult && (

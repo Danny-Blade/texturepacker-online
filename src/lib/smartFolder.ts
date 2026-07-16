@@ -1,4 +1,6 @@
 const POLL_INTERVAL_MS = 4000;
+const HANDLE_DB = 'web-texturepacker-smart-folders';
+const HANDLE_STORE = 'handles';
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp)$/i;
 
@@ -10,27 +12,55 @@ interface FsDirHandleLike extends FileSystemDirectoryHandle {
   entries(): AsyncIterableIterator<[string, FsDirHandleLike | FsFileHandleLike]>;
 }
 
+interface PermissionCapableHandle {
+  queryPermission?: (options?: { mode: 'read' }) => Promise<PermissionState>;
+  requestPermission?: (options?: { mode: 'read' }) => Promise<PermissionState>;
+}
+
+export type SmartFolderPermission = PermissionState | 'unsupported';
+
 export interface WatchedFolder {
   id: string;
   name: string;
   handle: FileSystemDirectoryHandle;
+  /** Snapshot captured atomically when the watcher is registered. */
+  initialScan: ScanResult;
+}
+
+export interface ScannedFile {
+  file: File;
+  relativePath: string;
+  key: string;
 }
 
 export interface ScanResult {
   files: File[];
   /** Relative paths inside the directory (e.g. "hero/walk/0001.png"). */
   relativePaths: string[];
+  entries: ScannedFile[];
+}
+
+export interface SmartFolderChanges {
+  added: ScannedFile[];
+  removedPaths: string[];
+  /** Same path with a changed size or modification timestamp. */
+  modifiedPaths: string[];
+}
+
+export interface WatchOptions {
+  id?: string;
+  requestPermission?: boolean;
 }
 
 export interface SmartFolderManager {
-  watch(handle: FileSystemDirectoryHandle): Promise<WatchedFolder>;
+  watch(handle: FileSystemDirectoryHandle, options?: WatchOptions): Promise<WatchedFolder>;
   unwatch(id: string): void;
   syncNow(id: string): Promise<void>;
   dispose(): void;
 }
 
 export interface SmartFolderCallbacks {
-  onSync: (folder: WatchedFolder, added: File[], removed: string[]) => void;
+  onSync: (folder: WatchedFolder, changes: SmartFolderChanges) => void | Promise<void>;
   onError: (folder: WatchedFolder, error: Error) => void;
 }
 
@@ -45,36 +75,38 @@ function fileKey(file: File, relativePath: string): string {
 async function walk(
   dir: FsDirHandleLike,
   prefix: string,
-  files: File[],
-  relativePaths: string[],
+  entries: ScannedFile[],
 ): Promise<void> {
   for await (const [name, entry] of dir.entries()) {
     if (entry.kind === 'directory') {
-      await walk(entry as FsDirHandleLike, prefix ? `${prefix}/${name}` : name, files, relativePaths);
-    } else if (entry.kind === 'file') {
-      if (!isImageName(name)) continue;
+      await walk(entry as FsDirHandleLike, prefix ? `${prefix}/${name}` : name, entries);
+    } else if (entry.kind === 'file' && isImageName(name)) {
       try {
         const file = await (entry as FsFileHandleLike).getFile();
-        files.push(file);
-        relativePaths.push(prefix ? `${prefix}/${name}` : name);
+        const relativePath = prefix ? `${prefix}/${name}` : name;
+        entries.push({ file, relativePath, key: fileKey(file, relativePath) });
       } catch {
-        // Skip unreadable file
+        // A temporarily unreadable file does not abort the rest of the folder.
       }
     }
   }
 }
 
 export async function scanDirectory(handle: FileSystemDirectoryHandle): Promise<ScanResult> {
-  const files: File[] = [];
-  const relativePaths: string[] = [];
-  await walk(handle as FsDirHandleLike, '', files, relativePaths);
-  return { files, relativePaths };
+  const entries: ScannedFile[] = [];
+  await walk(handle as FsDirHandleLike, '', entries);
+  entries.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  return {
+    entries,
+    files: entries.map((entry) => entry.file),
+    relativePaths: entries.map((entry) => entry.relativePath),
+  };
 }
 
 interface WatchedEntry {
   folder: WatchedFolder;
-  lastFileKeys: Set<string>;
-  lastByKey: Map<string, string>;
+  lastByPath: Map<string, ScannedFile>;
+  syncing: Promise<void> | null;
 }
 
 function createNoopManager(): SmartFolderManager {
@@ -88,104 +120,176 @@ function createNoopManager(): SmartFolderManager {
   };
 }
 
+export async function getDirectoryPermission(
+  handle: FileSystemDirectoryHandle,
+  request = false,
+): Promise<SmartFolderPermission> {
+  const capable = handle as unknown as PermissionCapableHandle;
+  try {
+    if (capable.queryPermission) {
+      const current = await capable.queryPermission({ mode: 'read' });
+      if (current === 'granted' || !request) return current;
+    } else if (!capable.requestPermission) {
+      // Handles returned by older implementations are already readable.
+      return 'unsupported';
+    }
+    if (request && capable.requestPermission) {
+      return await capable.requestPermission({ mode: 'read' });
+    }
+    return 'prompt';
+  } catch {
+    return 'denied';
+  }
+}
+
 export function createSmartFolderManager(callbacks: SmartFolderCallbacks): SmartFolderManager {
   if (typeof window === 'undefined') return createNoopManager();
 
-  const entries = new Map<string, WatchedEntry>();
+  const watched = new Map<string, WatchedEntry>();
 
-  const syncEntry = async (entry: WatchedEntry): Promise<void> => {
+  const performSync = async (entry: WatchedEntry): Promise<void> => {
     let scan: ScanResult;
     try {
       scan = await scanDirectory(entry.folder.handle);
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      entries.delete(entry.folder.id);
-      callbacks.onError(entry.folder, error);
-      return;
+    } catch (error) {
+      watched.delete(entry.folder.id);
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      callbacks.onError(entry.folder, normalized);
+      throw normalized;
     }
 
-    const nextKeys = new Set<string>();
-    const nextByKey = new Map<string, string>();
-    const addedFiles: File[] = [];
-
-    for (let i = 0; i < scan.files.length; i++) {
-      const file = scan.files[i];
-      const rel = scan.relativePaths[i];
-      const key = fileKey(file, rel);
-      nextKeys.add(key);
-      nextByKey.set(key, rel);
-      if (!entry.lastFileKeys.has(key)) {
-        try {
-          Object.defineProperty(file, 'webkitRelativePath', {
-            value: `${entry.folder.name}/${rel}`,
-            configurable: true,
-          });
-        } catch {
-          // ignore
-        }
-        addedFiles.push(file);
-      }
-    }
-
+    const nextByPath = new Map(scan.entries.map((item) => [item.relativePath, item]));
+    const added: ScannedFile[] = [];
     const removedPaths: string[] = [];
-    for (const oldKey of entry.lastFileKeys) {
-      if (!nextKeys.has(oldKey)) {
-        const path = entry.lastByKey.get(oldKey);
-        if (path) removedPaths.push(path);
+    const modifiedPaths: string[] = [];
+
+    for (const item of scan.entries) {
+      const previous = entry.lastByPath.get(item.relativePath);
+      if (!previous) added.push(item);
+      else if (previous.key !== item.key) {
+        modifiedPaths.push(item.relativePath);
+        added.push(item);
+        removedPaths.push(item.relativePath);
       }
     }
+    for (const path of entry.lastByPath.keys()) {
+      if (!nextByPath.has(path)) removedPaths.push(path);
+    }
 
-    entry.lastFileKeys = nextKeys;
-    entry.lastByKey = nextByKey;
-
-    if (addedFiles.length > 0 || removedPaths.length > 0) {
-      callbacks.onSync(entry.folder, addedFiles, removedPaths);
+    entry.lastByPath = nextByPath;
+    if (added.length > 0 || removedPaths.length > 0) {
+      await callbacks.onSync(entry.folder, { added, removedPaths, modifiedPaths });
     }
   };
 
+  const syncEntry = (entry: WatchedEntry): Promise<void> => {
+    if (entry.syncing) return entry.syncing;
+    entry.syncing = performSync(entry).finally(() => { entry.syncing = null; });
+    return entry.syncing;
+  };
+
   const intervalId = window.setInterval(() => {
-    for (const entry of Array.from(entries.values())) {
-      void syncEntry(entry);
-    }
+    for (const entry of watched.values()) void syncEntry(entry).catch(() => {});
   }, POLL_INTERVAL_MS);
 
   return {
-    async watch(handle) {
+    async watch(handle, options = {}) {
+      const permission = await getDirectoryPermission(handle, options.requestPermission ?? true);
+      if (permission === 'denied' || permission === 'prompt') {
+        throw new DOMException('Read permission is required for this Smart Folder.', 'NotAllowedError');
+      }
+      const initialScan = await scanDirectory(handle);
       const folder: WatchedFolder = {
-        id: `sf-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: options.id ?? `sf-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         name: handle.name,
         handle,
+        initialScan,
       };
-      const initial = await scanDirectory(handle);
-      const keys = new Set<string>();
-      const byKey = new Map<string, string>();
-      for (let i = 0; i < initial.files.length; i++) {
-        const k = fileKey(initial.files[i], initial.relativePaths[i]);
-        keys.add(k);
-        byKey.set(k, initial.relativePaths[i]);
-      }
-      entries.set(folder.id, { folder, lastFileKeys: keys, lastByKey: byKey });
+      watched.set(folder.id, {
+        folder,
+        lastByPath: new Map(initialScan.entries.map((item) => [item.relativePath, item])),
+        syncing: null,
+      });
       return folder;
     },
     unwatch(id) {
-      entries.delete(id);
+      watched.delete(id);
     },
     async syncNow(id) {
-      const entry = entries.get(id);
-      if (!entry) return;
-      await syncEntry(entry);
+      const entry = watched.get(id);
+      if (entry) await syncEntry(entry);
     },
     dispose() {
       window.clearInterval(intervalId);
-      entries.clear();
+      watched.clear();
     },
   };
 }
 
+function openHandleDb(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const request = indexedDB.open(HANDLE_DB, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(HANDLE_STORE)) {
+        request.result.createObjectStore(HANDLE_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+  });
+}
+
+async function withHandleStore<T>(
+  mode: IDBTransactionMode,
+  operation: (store: IDBObjectStore) => IDBRequest<T>,
+): Promise<T | null> {
+  const db = await openHandleDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(HANDLE_STORE, mode);
+      const request = operation(tx.objectStore(HANDLE_STORE));
+      request.onsuccess = () => resolve(request.result ?? null);
+      request.onerror = () => resolve(null);
+      tx.oncomplete = () => db.close();
+      tx.onerror = () => { db.close(); resolve(null); };
+    } catch {
+      db.close();
+      resolve(null);
+    }
+  });
+}
+
+export async function persistDirectoryHandle(id: string, handle: FileSystemDirectoryHandle): Promise<boolean> {
+  return (await withHandleStore('readwrite', (store) => store.put(handle, id))) !== null;
+}
+
+export async function restoreDirectoryHandle(id: string): Promise<FileSystemDirectoryHandle | null> {
+  return await withHandleStore('readonly', (store) => store.get(id)) as FileSystemDirectoryHandle | null;
+}
+
+export async function forgetDirectoryHandle(id: string): Promise<void> {
+  await withHandleStore('readwrite', (store) => store.delete(id));
+}
+
 export const WATCH_FOLDER_EVENT = 'tp:watch-folder';
+export const SMART_FOLDER_COMMAND_EVENT = 'tp:smart-folder-command';
 
 interface WatchFolderEventDetail {
   handle: FileSystemDirectoryHandle;
+  folderId?: string;
+}
+
+export type SmartFolderCommand =
+  | { action: 'sync'; folderId: string }
+  | { action: 'unwatch'; folderId: string }
+  | { action: 'authorize'; folderId: string };
+
+export function dispatchSmartFolderCommand(command: SmartFolderCommand): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent<SmartFolderCommand>(SMART_FOLDER_COMMAND_EVENT, { detail: command }));
+  }
 }
 
 export type WatchFolderEvent = CustomEvent<WatchFolderEventDetail>;
@@ -198,13 +302,13 @@ interface WindowWithPicker {
   showDirectoryPicker: (options?: unknown) => Promise<FileSystemDirectoryHandle>;
 }
 
-export async function requestWatchFolder(): Promise<FileSystemDirectoryHandle | null> {
+export async function requestWatchFolder(folderId?: string): Promise<FileSystemDirectoryHandle | null> {
   if (!isFileSystemAccessSupported()) return null;
   try {
-    const w = window as unknown as WindowWithPicker;
-    const handle = await w.showDirectoryPicker();
-    const detail: WatchFolderEventDetail = { handle };
-    window.dispatchEvent(new CustomEvent<WatchFolderEventDetail>(WATCH_FOLDER_EVENT, { detail }));
+    const handle = await (window as unknown as WindowWithPicker).showDirectoryPicker();
+    window.dispatchEvent(new CustomEvent<WatchFolderEventDetail>(WATCH_FOLDER_EVENT, {
+      detail: { handle, folderId },
+    }));
     return handle;
   } catch {
     return null;

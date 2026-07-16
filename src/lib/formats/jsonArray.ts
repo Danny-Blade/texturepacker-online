@@ -1,4 +1,5 @@
 import type { FormatGenerator } from './types';
+import { spriteMetadataForExport } from '../spriteMetadata';
 
 const jsonArray: FormatGenerator = {
   extension: 'json',
@@ -31,6 +32,13 @@ const jsonArray: FormatGenerator = {
         if (item.polygon && item.polygon.length >= 6) {
           frame.polygon = item.polygon.slice();
         }
+        const spriteMetadata = spriteMetadataForExport(
+          item.metadata,
+          item.sourceSize.w / scale,
+          item.sourceSize.h / scale,
+          scale,
+        );
+        if (spriteMetadata) frame.metadata = spriteMetadata;
         return frame;
       }),
     };

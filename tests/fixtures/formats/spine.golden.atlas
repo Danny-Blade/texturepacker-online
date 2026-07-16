@@ -1,0 +1,14 @@
+atlas-3@2x.png
+size: 128,96
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+
+hero&boss.png
+  rotate: true
+  xy: 14, 22
+  size: 12, 20
+  orig: 32, 28
+  offset: 4, 10
+  vertices: 26,22, 26,42, 14,42, 14,22
+  index: -1

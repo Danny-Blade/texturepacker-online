@@ -88,6 +88,7 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
     maxWidth,
     maxHeight,
     activeSheet,
+    multipackMode,
   } = useTpStore(
     useShallow((s) => ({
       zoom: s.zoom,
@@ -101,12 +102,14 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
       maxWidth: s.settings.maxWidth,
       maxHeight: s.settings.maxHeight,
       activeSheet: s.activeSheet,
+      multipackMode: s.settings.multipackMode,
     })),
   );
 
   const exceedsMax = useTpStore(selectExceedsMax);
   const sheetData = useTpStore(selectActiveSheet);
   const setActiveSheet = useTpStore((s) => s.setActiveSheet);
+  const updateSpriteMetadata = useTpStore((s) => s.updateSpriteMetadata);
 
   const setZoom = useTpStore((s) => s.setZoom);
   const zoomIn = useTpStore((s) => s.zoomIn);
@@ -516,13 +519,33 @@ export default function CanvasViewport({ locale }: CanvasViewportProps) {
         >
           {sheetsList.map((sh, i) => {
             const active = i === activeSheet;
-            const label = t.canvas.sheet.replace('{n}', String(i + 1));
+            const label = sh.name ?? t.canvas.sheet.replace('{n}', String(i + 1));
             return (
               <button
                 key={sh.index}
                 role="tab"
                 aria-selected={active}
                 onClick={() => setActiveSheet(i)}
+                onDragOver={(event) => {
+                  if (multipackMode === 'manual' && sh.id) {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'move';
+                  }
+                }}
+                onDrop={(event) => {
+                  if (multipackMode !== 'manual' || !sh.id) return;
+                  event.preventDefault();
+                  try {
+                    const payload = JSON.parse(
+                      event.dataTransfer.getData('application/x-tp-sprites'),
+                    ) as { ids?: string[] };
+                    if (Array.isArray(payload.ids) && payload.ids.length > 0) {
+                      updateSpriteMetadata(payload.ids, { manualSheetId: sh.id });
+                    }
+                  } catch {
+                    // Ignore unrelated drag payloads.
+                  }
+                }}
                 className={`h-6 px-3 text-[11px] rounded-t-md border-x border-t transition whitespace-nowrap ${
                   active
                     ? 'bg-[var(--tp-panel)] text-[var(--tp-text)] border-[var(--tp-border)]'

@@ -1,0 +1,14 @@
+[gd_resource type="Resource" load_steps=3 format=3]
+
+[ext_resource type="Texture2D" path="res://atlas-3@2x.png" id="1"]
+
+[sub_resource type="AtlasTexture" id="hero_boss_png"]
+atlas = ExtResource("1")
+region = Rect2(14, 22, 12, 20)
+margin = Rect2(4, 6, 8, 10)
+filter_clip = false
+
+[resource]
+textures = {
+"hero&boss.png": SubResource("hero_boss_png")
+}

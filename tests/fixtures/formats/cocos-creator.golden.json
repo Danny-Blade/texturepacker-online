@@ -1,0 +1,28 @@
+{
+  "__type__": "cc.SpriteAtlas",
+  "name": "atlas",
+  "_native": "atlas-3@2x.png",
+  "spriteFrames": {
+    "hero&boss.png": {
+      "rect": [
+        14,
+        22,
+        12,
+        20
+      ],
+      "rotated": true,
+      "offset": [
+        -2,
+        2
+      ],
+      "originalSize": [
+        32,
+        28
+      ]
+    }
+  },
+  "size": [
+    128,
+    96
+  ]
+}

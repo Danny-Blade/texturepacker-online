@@ -1,0 +1,23 @@
+{
+  "image": "atlas-3@2x.png",
+  "size": {
+    "w": 128,
+    "h": 96
+  },
+  "scale": 2,
+  "frames": [
+    {
+      "name": "hero&boss.png",
+      "x": 14,
+      "y": 22,
+      "w": 12,
+      "h": 20,
+      "rotated": true,
+      "trimmed": true,
+      "originalW": 32,
+      "originalH": 28,
+      "offsetX": 4,
+      "offsetY": 6
+    }
+  ]
+}

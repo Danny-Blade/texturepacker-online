@@ -24,7 +24,11 @@ import {
   type FolderNode,
   type SpriteNode,
 } from '@/lib/spriteTree';
-import { isFileSystemAccessSupported, requestWatchFolder } from '@/lib/smartFolder';
+import {
+  dispatchSmartFolderCommand,
+  isFileSystemAccessSupported,
+  requestWatchFolder,
+} from '@/lib/smartFolder';
 
 interface SpritesPanelProps {
   locale: Locale;
@@ -208,6 +212,7 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
   const collapsedFolders = useTpStore((s) => s.collapsedFolders);
   const renamingId = useTpStore((s) => s.renamingId);
   const smartFolders = useTpStore((s) => s.smartFolders);
+  const aliasDuplicates = useTpStore((s) => s.settings.aliasDuplicates ?? false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
@@ -227,9 +232,13 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
 
   const watchedNameMap = useMemo(() => {
     const map = new Map<string, (typeof smartFolders)[number]>();
-    for (const sf of smartFolders) map.set(sf.name, sf);
+    for (const sf of smartFolders) {
+      if (!sf.requiresAuthorization) map.set(sf.name, sf);
+    }
     return map;
   }, [smartFolders]);
+  const authorizedFolderCount = smartFolders.filter((folder) => !folder.requiresAuthorization).length;
+  const pendingAuthorizationCount = smartFolders.length - authorizedFolderCount;
 
   useEffect(() => {
     if (smartFolders.length === 0) return;
@@ -260,6 +269,17 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
   }, [t.smartFolder.notSupported]);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const aliasIds = useMemo(() => {
+    if (!aliasDuplicates) return new Set<string>();
+    const seen = new Set<string>();
+    const aliases = new Set<string>();
+    for (const image of images) {
+      const key = `${image.width}x${image.height}:${image.contentHash ?? image.url}`;
+      if (seen.has(key)) aliases.add(image.id);
+      else seen.add(key);
+    }
+    return aliases;
+  }, [aliasDuplicates, images]);
   const collapsedSet = useMemo(() => new Set(collapsedFolders), [collapsedFolders]);
 
   const tree = useMemo(() => buildSpriteTree(images, sortMode), [images, sortMode]);
@@ -847,7 +867,12 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
               className="w-full rounded-sm border border-[var(--tp-accent)] bg-[var(--tp-bg)] px-1 py-0.5 text-xs text-[var(--tp-text)] outline-none"
             />
           ) : (
-            <div className="truncate text-xs text-[var(--tp-text)]">{node.baseName}</div>
+            <div className="flex min-w-0 items-center gap-1">
+              <span className="truncate text-xs text-[var(--tp-text)]">{node.baseName}</span>
+              {aliasIds.has(node.id) && (
+                <span className="shrink-0 rounded bg-[var(--tp-accent-soft)] px-1 text-[9px] text-[var(--tp-accent)]">alias</span>
+              )}
+            </div>
           )}
           <div className="text-[10px] text-[var(--tp-text-dim)]">
             {node.image.width} × {node.image.height}
@@ -1224,7 +1249,10 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
               <circle cx="12" cy="12" r="9" />
             </svg>
             <span>
-              {t.smartFolder.watchedCount.replace('{n}', String(smartFolders.length))}
+              {t.smartFolder.watchedCount.replace('{n}', String(authorizedFolderCount))}
+              {pendingAuthorizationCount > 0
+                ? ` · ${t.smartFolder.authorizationCount.replace('{n}', String(pendingAuthorizationCount))}`
+                : ''}
             </span>
             <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor">
               <path d="M7 10l5 5 5-5z" />
@@ -1245,14 +1273,38 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-[11px] text-[var(--tp-text)]">{sf.name}</div>
                     <div className="text-[10px] text-[var(--tp-text-muted)]">
-                      {formatRelativeTime(sf.lastSync, nowTick, t)}
+                      {sf.requiresAuthorization
+                        ? t.smartFolder.authorizationRequired
+                        : formatRelativeTime(sf.lastSync, nowTick, t)}
                     </div>
                   </div>
+                  {sf.requiresAuthorization && (
+                    <button
+                      type="button"
+                      title={t.smartFolder.authorizeAgain}
+                      aria-label={t.smartFolder.authorizeAgain}
+                      onClick={() => dispatchSmartFolderCommand({ action: 'authorize', folderId: sf.id })}
+                      className="shrink-0 rounded px-1 text-[10px] text-[var(--tp-accent)] hover:bg-[var(--tp-panel)]"
+                    >
+                      {t.smartFolder.authorizeAgain}
+                    </button>
+                  )}
+                  {!sf.requiresAuthorization && (
+                    <button
+                      type="button"
+                      title={t.smartFolder.syncNow}
+                      aria-label={t.smartFolder.syncNow}
+                      onClick={() => dispatchSmartFolderCommand({ action: 'sync', folderId: sf.id })}
+                      className="shrink-0 rounded px-1 text-[10px] text-[var(--tp-accent)] hover:bg-[var(--tp-panel)]"
+                    >
+                      {t.smartFolder.syncNow}
+                    </button>
+                  )}
                   <button
                     type="button"
                     title={t.smartFolder.unwatch}
                     aria-label={t.smartFolder.unwatch}
-                    onClick={() => useTpStore.getState().removeSmartFolder(sf.id)}
+                    onClick={() => dispatchSmartFolderCommand({ action: 'unwatch', folderId: sf.id })}
                     className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--tp-text-muted)] hover:text-[var(--tp-danger)]"
                   >
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

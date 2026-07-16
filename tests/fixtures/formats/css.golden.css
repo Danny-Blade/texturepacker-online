@@ -1,0 +1,7 @@
+.sprite { background-image: url('atlas-3@2x.png'); background-repeat: no-repeat; }
+
+.sprite-hero-boss-png {
+  width: 12px;
+  height: 20px;
+  background-position: -14px -22px;
+}

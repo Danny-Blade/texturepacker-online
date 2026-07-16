@@ -7,7 +7,10 @@ export interface FormatOptions {
   imageFileName: (sheetIndex: number) => string;
   /** Data file name (e.g. `spritesheet.json`). For multi-sheet projects this is the canonical name; per-sheet split is left to the caller. */
   dataFileName: string;
-  /** Scale variant (1 = 1x, 2 = @2x, etc). Affects sizes recorded in the data. */
+  /**
+   * Scale variant metadata (1 = 1x, 2 = @2x, etc). The supplied sheet already
+   * contains physical output coordinates for this scale.
+   */
   scale?: number;
 }
 

@@ -13,6 +13,11 @@ import {
 } from './packer';
 import { prepareSpriteForAtlas } from './imageProcessing';
 import { packAsync, type PackJob } from './packerClient';
+import {
+  clampPivot,
+  normalizeNineSlice,
+  type SpriteMetadata,
+} from './spriteMetadata';
 
 export type ThemeMode = 'dark' | 'light';
 
@@ -22,6 +27,20 @@ export type SortMode = 'manual' | 'name-asc' | 'name-desc' | 'size-desc' | 'size
 
 export type ImageFileFormat = 'png' | 'png-8' | 'jpg' | 'webp';
 
+export interface ScalingVariant {
+  id: string;
+  name: string;
+  scale: number;
+  suffix: string;
+  /** Optional case-insensitive substring matched against sprite names. */
+  filter?: string;
+  sort?: 'layout' | 'name' | 'area';
+  algorithm?: 'nearest' | 'bilinear' | 'bicubic';
+  maxWidth?: number;
+  maxHeight?: number;
+  sameLayout?: boolean;
+}
+
 export interface SmartFolder {
   id: string;
   /** Display label (folder name). */
@@ -30,12 +49,17 @@ export interface SmartFolder {
   trackedIds: string[];
   /** Last poll timestamp. */
   lastSync: number;
+  /** Restored descriptors have no persisted directory handle and must be re-authorized. */
+  requiresAuthorization?: boolean;
+  /** Names are retained while authorization is pending so a resave is lossless. */
+  trackedSpriteNames?: string[];
 }
 
 export interface PublishOptions {
   imageFormat: ImageFileFormat;
   imageQuality: number; // 0..1, used for jpg/webp
   scales: number[]; // e.g. [1] or [1, 2, 0.5]
+  variants?: ScalingVariant[];
   imageFileTemplate: string; // supports {n}
   dataFileTemplate: string;
   bundleZip: boolean;
@@ -104,6 +128,7 @@ export interface TexturePackerState {
   reorderImages: (fromIds: string[], beforeId: string | null) => void;
   reorderImagesInto: (fromIds: string[], folderPath: string, beforeId: string | null) => void;
   renameImage: (id: string, newName: string) => void;
+  updateSpriteMetadata: (ids: string[], patch: Partial<SpriteMetadata>) => void;
   startRename: (id: string | null) => void;
 
   // actions — sprite browser
@@ -158,19 +183,28 @@ export interface TexturePackerState {
 const initialSettings: PackerOptions = {
   maxWidth: 2048,
   maxHeight: 2048,
-  padding: 2,
   borderPadding: 0,
   shapePadding: 2,
+  innerPadding: 0,
   allowRotation: false,
   powerOfTwo: true,
   forceSquare: false,
+  sizeMode: 'max',
+  sizeConstraint: 'pot',
+  packMode: 'good',
+  commonDivisorX: 1,
+  commonDivisorY: 1,
   algorithm: 'maxrects-bssf',
   trimAlpha: false,
   trimThreshold: 1,
-  trimMode: 'rect',
+  trimMode: 'trim',
   polygonTolerance: 2,
+  trimMargin: 0,
   extrude: 0,
   multipack: false,
+  multipackMode: 'auto',
+  manualSheets: [{ id: 'sheet-main', name: 'Main' }],
+  aliasDuplicates: false,
 };
 
 const initialPublishOptions: PublishOptions = {
@@ -394,10 +428,63 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
       return { images, renamingId: null };
     }),
 
+  updateSpriteMetadata: (ids, patch) => {
+    const idSet = new Set(ids);
+    set((s) => ({
+      images: s.images.map((image) => {
+        if (!idSet.has(image.id)) return image;
+        const metadata: SpriteMetadata = { ...(image.metadata ?? {}) };
+        for (const [key, value] of Object.entries(patch)) {
+          if (value === undefined) delete metadata[key];
+          else if (key === 'pivot') metadata.pivot = clampPivot(value as NonNullable<SpriteMetadata['pivot']>, image.width, image.height);
+          else if (key === 'nineSlice') metadata.nineSlice = normalizeNineSlice(value as NonNullable<SpriteMetadata['nineSlice']>, image.width, image.height);
+          else metadata[key] = value;
+        }
+        return { ...image, metadata };
+      }),
+    }));
+    schedulePack();
+  },
+
   startRename: (id) => set({ renamingId: id }),
 
   setSettings: (patch) => {
-    set((s) => ({ settings: { ...s.settings, ...patch } }));
+    set((s) => {
+      // `padding` was the only UI setting in older .tps JSON projects. Treat
+      // it as a legacy alias for shapePadding, then discard it so there is one
+      // authoritative value in current state and newly saved projects.
+      const currentSettings = { ...s.settings };
+      delete currentSettings.padding;
+      const { padding: patchPadding, ...currentPatch } = patch;
+      // If both exist, `padding` wins: old saved projects kept a stale
+      // shapePadding default while the Inspector only changed `padding`.
+      const shapePadding = patchPadding ?? currentPatch.shapePadding ?? currentSettings.shapePadding;
+      const requestedTrimMode = currentPatch.trimMode as string | undefined;
+      const trimMode =
+        requestedTrimMode === 'polygon'
+          ? 'polygon-outline'
+          : requestedTrimMode === 'rect'
+            ? 'trim'
+          : currentPatch.trimMode ?? currentSettings.trimMode;
+      const sizeConstraint =
+        currentPatch.sizeConstraint ??
+        (currentPatch.powerOfTwo === undefined
+          ? currentSettings.sizeConstraint
+          : currentPatch.powerOfTwo
+            ? 'pot'
+            : 'any');
+      const powerOfTwo = sizeConstraint === 'pot';
+      return {
+        settings: {
+          ...currentSettings,
+          ...currentPatch,
+          shapePadding,
+          trimMode,
+          sizeConstraint,
+          powerOfTwo,
+        },
+      };
+    });
     schedulePack();
   },
 
@@ -514,6 +601,26 @@ export function selectActiveSheet(s: TexturePackerState): PackSheet | null {
   return r.sheets[Math.max(0, Math.min(s.activeSheet, r.sheets.length - 1))] ?? null;
 }
 
+function hashDecodedPixels(image: HTMLImageElement): string | undefined {
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return undefined;
+    context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, image.width, image.height).data;
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < pixels.length; index++) {
+      hash ^= pixels[index];
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return `${image.width}x${image.height}-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  } catch {
+    return undefined;
+  }
+}
+
 export function loadImageFromFile(file: File): Promise<ImageItem> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -530,6 +637,7 @@ export function loadImageFromFile(file: File): Promise<ImageItem> {
           height: img.height,
           image: img,
           url: e.target?.result as string,
+          contentHash: hashDecodedPixels(img),
         });
       };
       img.onerror = () => reject(new Error('Failed to load image'));

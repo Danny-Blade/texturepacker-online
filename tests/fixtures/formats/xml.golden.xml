@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TextureAtlas imagePath="atlas-3@2x.png" width="128" height="96">
+  <SubTexture name="hero&amp;boss.png" x="14" y="22" width="12" height="20" rotated="true" frameX="-4" frameY="-6" frameWidth="32" frameHeight="28"/>
+</TextureAtlas>
