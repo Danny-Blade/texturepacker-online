@@ -13,7 +13,7 @@ const unity: FormatGenerator = {
       const nineSlice = readSpriteMetadata(item.metadata).nineSlice;
       const border = nineSlice ? scaleInsets(nineSlice.border, scale) : undefined;
       const content = nineSlice ? scaleInsets(nineSlice.content, scale) : undefined;
-      return {
+      const base: Record<string, unknown> = {
         name: item.name,
         rect: {
           x: item.x,
@@ -30,6 +30,16 @@ const unity: FormatGenerator = {
         rotated: item.rotated,
         trimmed: item.trimmed,
       };
+      if (item.mesh && item.mesh.vertices.length >= 6 && item.mesh.triangles.length >= 3) {
+        // Tight-mesh data suitable for Sprite.OverrideGeometry — vertices are
+        // sprite-local (relative to the trimmed frame's top-left, unrotated).
+        base.mesh = {
+          vertices: item.mesh.vertices.slice(),
+          triangles: item.mesh.triangles.slice(),
+          uvs: item.mesh.uvs.slice(),
+        };
+      }
+      return base;
     });
     return JSON.stringify(
       { texture: opts.imageFileName(sheet.index), sprites, size: { w: sheet.width, h: sheet.height } },

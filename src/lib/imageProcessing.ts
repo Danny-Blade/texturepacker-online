@@ -1,8 +1,183 @@
-import type { ImageItem, PreparedSprite, PackerOptions, SpriteEffects, TrimInfo, SpritePolygon } from './packer';
+import type {
+  ImageItem,
+  PreparedSprite,
+  PackerOptions,
+  SpriteEffects,
+  SpriteMesh,
+  TrimInfo,
+  SpritePolygon,
+} from './packer';
 import { computePolygonOutline, offsetPolygon } from './polygonTrim';
 import { applySpriteEffects } from './spriteEffects';
+import { earClip, polygonUVs } from './triangulate';
 
 type TrimBounds = { x: number; y: number; w: number; h: number };
+
+export type AlphaHandling = 'keep' | 'clear' | 'bleed' | 'premultiply';
+
+/**
+ * Clear the RGB channels of any pixel whose alpha is 0. Prevents non-zero
+ * colour data in fully transparent pixels from bleeding into anti-aliased
+ * downscales (the classic "colored transparent" fringe artefact).
+ */
+export function alphaClearRgba(data: Uint8ClampedArray): void {
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] === 0) {
+      data[i] = 0;
+      data[i + 1] = 0;
+      data[i + 2] = 0;
+    }
+  }
+}
+
+/**
+ * 4-neighbour dilation of RGB colour into transparent regions. Alpha values are
+ * left unchanged; only pixels that are currently transparent (or whose colour
+ * was filled from an earlier iteration) have their RGB updated. Double-buffered
+ * so a single iteration only propagates one pixel from any opaque source.
+ */
+export function alphaBleedRgba(
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+  iterations: number,
+): void {
+  const iters = Math.max(0, Math.floor(iterations));
+  if (iters <= 0 || w <= 0 || h <= 0) return;
+  const assigned = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    if (data[i * 4 + 3] > 0) assigned[i] = 1;
+  }
+  for (let iter = 0; iter < iters; iter++) {
+    const prevAssigned = assigned.slice();
+    const prevData = new Uint8ClampedArray(data);
+    let changed = false;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = y * w + x;
+        if (prevAssigned[idx]) continue;
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        let count = 0;
+        if (x > 0 && prevAssigned[idx - 1]) {
+          const n = (idx - 1) * 4;
+          r += prevData[n]; g += prevData[n + 1]; b += prevData[n + 2]; count++;
+        }
+        if (x < w - 1 && prevAssigned[idx + 1]) {
+          const n = (idx + 1) * 4;
+          r += prevData[n]; g += prevData[n + 1]; b += prevData[n + 2]; count++;
+        }
+        if (y > 0 && prevAssigned[idx - w]) {
+          const n = (idx - w) * 4;
+          r += prevData[n]; g += prevData[n + 1]; b += prevData[n + 2]; count++;
+        }
+        if (y < h - 1 && prevAssigned[idx + w]) {
+          const n = (idx + w) * 4;
+          r += prevData[n]; g += prevData[n + 1]; b += prevData[n + 2]; count++;
+        }
+        if (count > 0) {
+          const p = idx * 4;
+          data[p] = Math.round(r / count);
+          data[p + 1] = Math.round(g / count);
+          data[p + 2] = Math.round(b / count);
+          // alpha stays as-is on purpose — the bleed only fills RGB.
+          assigned[idx] = 1;
+          changed = true;
+        }
+      }
+    }
+    if (!changed) break;
+  }
+}
+
+/**
+ * Premultiply RGB channels by alpha. Consumers can honour the
+ * {@link PackedItem.premultiplied} flag and skip runtime premultiplication.
+ */
+export function premultiplyAlphaRgba(data: Uint8ClampedArray): void {
+  for (let i = 0; i < data.length; i += 4) {
+    const a = data[i + 3];
+    if (a === 255 || a === 0) continue;
+    data[i] = Math.round(data[i] * a / 255);
+    data[i + 1] = Math.round(data[i + 1] * a / 255);
+    data[i + 2] = Math.round(data[i + 2] * a / 255);
+  }
+}
+
+interface ProcessedSource {
+  source: CanvasImageSource;
+  width: number;
+  height: number;
+  premultiplied: boolean;
+}
+
+const PROCESSED_CACHE_LIMIT = 256;
+const processedCache = new Map<string, ProcessedSource>();
+
+/**
+ * Return the source bitmap used for trim/extrude/effects downstream. When
+ * `alphaHandling` is `keep` (or the browser refuses to expose ImageData) this
+ * is the original image; otherwise it is a fresh canvas whose pixels have been
+ * rewritten according to the requested mode. Results are memoised by
+ * `image.src + mode + iterations`.
+ */
+export function getProcessedSource(
+  image: HTMLImageElement,
+  mode: AlphaHandling,
+  iterations: number,
+): ProcessedSource {
+  const w = image.naturalWidth || image.width;
+  const h = image.naturalHeight || image.height;
+  if (mode === 'keep' || w <= 0 || h <= 0) {
+    return { source: image, width: w, height: h, premultiplied: false };
+  }
+  const iters = mode === 'bleed' ? Math.max(1, Math.floor(iterations)) : 0;
+  const key = `${image.src}|${mode}|${iters}`;
+  const cached = processedCache.get(key);
+  if (cached) return cached;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) {
+    return { source: image, width: w, height: h, premultiplied: false };
+  }
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(image, 0, 0);
+  let imageData: ImageData;
+  try {
+    imageData = ctx.getImageData(0, 0, w, h);
+  } catch {
+    return { source: image, width: w, height: h, premultiplied: false };
+  }
+  const buffer = imageData.data;
+  let premultiplied = false;
+  if (mode === 'clear') {
+    alphaClearRgba(buffer);
+  } else if (mode === 'bleed') {
+    alphaBleedRgba(buffer, w, h, iters);
+  } else if (mode === 'premultiply') {
+    premultiplyAlphaRgba(buffer);
+    premultiplied = true;
+  }
+  ctx.putImageData(imageData, 0, 0);
+  const result: ProcessedSource = {
+    source: canvas,
+    width: w,
+    height: h,
+    premultiplied,
+  };
+  if (processedCache.has(key)) processedCache.delete(key);
+  processedCache.set(key, result);
+  while (processedCache.size > PROCESSED_CACHE_LIMIT) {
+    const first = processedCache.keys().next().value;
+    if (first === undefined) break;
+    processedCache.delete(first);
+  }
+  return result;
+}
 
 function effectsKey(effects?: SpriteEffects): string {
   if (!effects || (!effects.outline && !effects.dropShadow && !effects.tint)) return '';
@@ -215,7 +390,12 @@ export function prepareSpriteForAtlas(item: ImageItem, options: PackerOptions): 
   const polyTol = Math.max(0, Number(options.polygonTolerance ?? 2));
   const wantPolygon = trimMode === 'polygon-outline';
   const fxKey = effectsKey(options.effects);
-  const cacheKey = `${item.image.src}|t:${effectiveTrim ? 1 : 0}|th:${threshold}|m:${trimMargin}|ip:${ip}|ex:${ex}|tm:${trimMode}|pt:${wantPolygon ? polyTol : 0}|fx:${fxKey}`;
+  const alphaMode: AlphaHandling = options.alphaHandling ?? 'keep';
+  const alphaIters = alphaMode === 'bleed'
+    ? Math.max(1, Math.floor(options.alphaBleedIterations ?? 4))
+    : 0;
+  const alphaKey = `${alphaMode}:${alphaIters}`;
+  const cacheKey = `${item.image.src}|t:${effectiveTrim ? 1 : 0}|th:${threshold}|m:${trimMargin}|ip:${ip}|ex:${ex}|tm:${trimMode}|pt:${wantPolygon ? polyTol : 0}|fx:${fxKey}|a:${alphaKey}`;
   const cached = preparedCache.get(cacheKey);
   if (cached) {
     if (cached.item === item) return cached;
@@ -228,6 +408,14 @@ export function prepareSpriteForAtlas(item: ImageItem, options: PackerOptions): 
   const fullW = item.width;
   const fullH = item.height;
 
+  // Alpha handling runs first so trim/extrude/effects observe the modified
+  // pixels. Bleed/clear leave alpha untouched (so trim bounds match the
+  // untouched image), but downstream extrude edge-copy still picks up the new
+  // colour data — which is the whole point of the mode.
+  const processed = getProcessedSource(item.image, alphaMode, alphaIters);
+  const drawSource: CanvasImageSource = processed.source;
+  const premultiplied = processed.premultiplied;
+
   let sx = 0;
   let sy = 0;
   let sw = fullW;
@@ -236,6 +424,9 @@ export function prepareSpriteForAtlas(item: ImageItem, options: PackerOptions): 
   let fullyEmpty = false;
 
   if (effectiveTrim) {
+    // Alpha values are unchanged by every non-`keep` mode, so trim bounds
+    // computed from the original image match the processed source. Reuse the
+    // cached image-src version for speed.
     const bounds = computeTrimBounds(item.image, threshold);
     if (bounds === null) {
       fullyEmpty = true;
@@ -279,10 +470,10 @@ export function prepareSpriteForAtlas(item: ImageItem, options: PackerOptions): 
     canvas.width = sw;
     canvas.height = sh;
     const ctx = canvas.getContext('2d');
-    if (ctx) ctx.drawImage(item.image, sx, sy, sw, sh, 0, 0, sw, sh);
+    if (ctx) ctx.drawImage(drawSource, sx, sy, sw, sh, 0, 0, sw, sh);
     frameSource = canvas;
   } else {
-    frameSource = item.image;
+    frameSource = drawSource;
   }
 
   const frameW = sw + ip * 2;
@@ -302,11 +493,20 @@ export function prepareSpriteForAtlas(item: ImageItem, options: PackerOptions): 
     ex > 0 ? buildExtrudedCanvas(frameSource, 0, 0, frameW, frameH, ex) : frameSource;
 
   let polygon: SpritePolygon | undefined;
+  let mesh: SpriteMesh | undefined;
   if (wantPolygon && !fullyEmpty) {
     const raw = computePolygonOutline(item.image, threshold, polyTol);
     if (raw && raw.length >= 6) {
       // Translate to padded frame coordinates (relative to the frame top-left).
       polygon = offsetPolygon(raw, sx - ip, sy - ip);
+      const triangles = earClip(polygon);
+      if (triangles.length >= 3 && triangles.length % 3 === 0) {
+        mesh = {
+          vertices: polygon.slice(),
+          triangles,
+          uvs: polygonUVs(polygon, sw + ip * 2, sh + ip * 2),
+        };
+      }
     }
   }
 
@@ -358,6 +558,8 @@ export function prepareSpriteForAtlas(item: ImageItem, options: PackerOptions): 
     height: frameH,
     extrudePadding: totalExtrude > 0 ? totalExtrude : undefined,
     polygon,
+    mesh,
+    premultiplied: premultiplied ? true : undefined,
   };
   fifoSet(preparedCache, cacheKey, prepared, PREPARED_CACHE_LIMIT);
   return prepared;

@@ -3,6 +3,7 @@
 import { prepareSpriteForAtlas } from './imageProcessing';
 import {
   packIntoSheets,
+  tightenLayout,
   type ImageItem,
   type PackedItem,
   type PackerOptions,
@@ -167,6 +168,10 @@ function buildPackResult(
   const itemsById = new Map<string, ImageItem>();
   for (const it of job.items) itemsById.set(it.id, it);
 
+  const wantMesh = Boolean(job.options.exportMesh);
+  const wantPolygonPacking = Boolean(job.options.polygonPacking);
+  const shapePad = Math.max(job.options.shapePadding ?? job.options.padding ?? 0, 0);
+  const borderPad = Math.max(job.options.borderPadding ?? 0, 0);
   const builtSheets: PackSheet[] = sheets.map((sh) => {
     const packed: PackedItem[] = [];
     for (const p of sh.placed) {
@@ -187,11 +192,23 @@ function buildPackResult(
         pixelSource: prep.pixelSource,
         extrudePadding: ex || undefined,
         polygon: prep.polygon,
+        mesh: wantMesh ? prep.mesh : undefined,
         width: prep.width,
         height: prep.height,
       });
     }
-    return { index: sh.index, width: sh.width, height: sh.height, packed };
+    // Polygon-aware tighten pass runs on the main thread so the worker stays
+    // a pure rectangle placer; see tightenLayout in packer.ts for details.
+    const finalPacked = wantPolygonPacking
+      ? tightenLayout(packed, {
+          polygonPacking: true,
+          shapePadding: shapePad,
+          borderPadding: borderPad,
+          maxWidth: sh.width,
+          maxHeight: sh.height,
+        })
+      : packed;
+    return { index: sh.index, width: sh.width, height: sh.height, packed: finalPacked };
   });
 
   const failed: PackedItem[] = [];
@@ -214,6 +231,7 @@ function buildPackResult(
         pixelSource: prep.pixelSource,
         extrudePadding: ex || undefined,
         polygon: prep.polygon,
+        mesh: wantMesh ? prep.mesh : undefined,
         width: prep.width,
         height: prep.height,
       });
@@ -257,7 +275,7 @@ export function packAsync(
   if (typeof window === 'undefined') {
     return { promise: Promise.resolve(emptyResult()), cancel: () => {} };
   }
-  if (options.multipackMode === 'manual' || options.aliasDuplicates) {
+  if (options.multipackMode === 'manual' || options.aliasDuplicates || options.normalMapPairing) {
     return {
       promise: Promise.resolve().then(() => {
         const result = packIntoSheets(images, options, prepareSpriteForAtlas);

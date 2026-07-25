@@ -213,6 +213,8 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
   const renamingId = useTpStore((s) => s.renamingId);
   const smartFolders = useTpStore((s) => s.smartFolders);
   const aliasDuplicates = useTpStore((s) => s.settings.aliasDuplicates ?? false);
+  const normalMapPairing = useTpStore((s) => s.settings.normalMapPairing ?? false);
+  const normalMapSuffixes = useTpStore((s) => s.settings.normalMapSuffixes ?? ['_n', '_nrm', '_normal']);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
@@ -280,6 +282,23 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
     }
     return aliases;
   }, [aliasDuplicates, images]);
+  const normalMapIds = useMemo(() => {
+    if (!normalMapPairing) return new Set<string>();
+    const suffixes = normalMapSuffixes.map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0);
+    if (suffixes.length === 0) return new Set<string>();
+    const flagged = new Set<string>();
+    for (const image of images) {
+      const idx = image.name.lastIndexOf('/');
+      const base = (idx >= 0 ? image.name.slice(idx + 1) : image.name).toLowerCase();
+      for (const suffix of suffixes) {
+        if (suffix.length < base.length && base.endsWith(suffix)) {
+          flagged.add(image.id);
+          break;
+        }
+      }
+    }
+    return flagged;
+  }, [images, normalMapPairing, normalMapSuffixes]);
   const collapsedSet = useMemo(() => new Set(collapsedFolders), [collapsedFolders]);
 
   const tree = useMemo(() => buildSpriteTree(images, sortMode), [images, sortMode]);
@@ -871,6 +890,9 @@ export default function SpritesPanel({ locale }: SpritesPanelProps) {
               <span className="truncate text-xs text-[var(--tp-text)]">{node.baseName}</span>
               {aliasIds.has(node.id) && (
                 <span className="shrink-0 rounded bg-[var(--tp-accent-soft)] px-1 text-[9px] text-[var(--tp-accent)]">alias</span>
+              )}
+              {normalMapIds.has(node.id) && (
+                <span className="shrink-0 rounded bg-[var(--tp-panel-2)] px-1 text-[9px] font-medium text-[var(--tp-text-muted)]">NRM</span>
               )}
             </div>
           )}

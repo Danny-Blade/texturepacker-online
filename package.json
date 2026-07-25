@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "worker:build": "node scripts/build-packer-worker.mjs",
+    "worker:build": "node scripts/build-packer-worker.mjs && node scripts/build-png8-worker.mjs",
     "predev": "npm run worker:build",
     "dev": "next dev",
     "prebuild": "npm run worker:build",

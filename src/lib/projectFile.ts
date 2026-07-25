@@ -382,11 +382,26 @@ function parsePublishOptions(value: unknown): PublishOptions {
     && (variant.sameLayout === undefined || typeof variant.sameLayout === 'boolean')))) {
     throw new Error('Project scaling variants are invalid');
   }
+  // PNG-8 fields were added later; fill in defaults for older projects.
+  const png8Colors = isFiniteNumber(value.png8Colors) && value.png8Colors >= 16 && value.png8Colors <= 256
+    ? Math.round(value.png8Colors as number)
+    : 256;
+  const png8Dither = isOneOf(value.png8Dither, ['none', 'floyd-steinberg', 'atkinson'] as const)
+    ? value.png8Dither
+    : 'none';
+  const png8DitherStrength = isFiniteNumber(value.png8DitherStrength)
+      && (value.png8DitherStrength as number) >= 0
+      && (value.png8DitherStrength as number) <= 1
+    ? (value.png8DitherStrength as number)
+    : 1;
   return {
     ...value,
     scales: [...value.scales],
     variants: variants?.map((variant) => ({ ...variant })),
-  } as PublishOptions;
+    png8Colors,
+    png8Dither,
+    png8DitherStrength,
+  } as unknown as PublishOptions;
 }
 
 function parseView(value: unknown): ProjectViewState {

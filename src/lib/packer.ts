@@ -1,4 +1,6 @@
 import type { SpriteMetadata } from './spriteMetadata';
+import { polyPolyCollide, rotatePolygon90 } from './polygonCollision';
+import { detectNormalPairs, type NormalPair } from './normalMapPairing';
 
 // Packing types and algorithms. Phase 3 implementations live in this file.
 export interface ImageItem {
@@ -23,6 +25,19 @@ export interface TrimInfo {
 /** A flat polygon outline in trimmed-sprite coordinates [x0,y0,x1,y1,...]. */
 export type SpritePolygon = number[];
 
+/**
+ * Triangulated mesh data for a sprite in *sprite-local* coordinates
+ * (relative to the trimmed frame top-left, unrotated). `vertices` are the
+ * polygon outline vertices (flat x/y pairs), `triangles` are indices into
+ * those vertices, and `uvs` are `[x/frameW, y/frameH, ...]` normalized to the
+ * frame — atlas consumers apply the final rotation, offset and scale.
+ */
+export interface SpriteMesh {
+  vertices: number[];
+  triangles: number[];
+  uvs: number[];
+}
+
 export interface SpriteEffects {
   outline?: { width: number; color: string };
   dropShadow?: { offsetX: number; offsetY: number; blur: number; color: string; opacity: number };
@@ -41,6 +56,14 @@ export interface PackedItem extends ImageItem {
   pixelSource?: CanvasImageSource;
   extrudePadding?: number;
   polygon?: SpritePolygon;
+  /** Triangulated mesh — populated when {@link PackerOptions.exportMesh} is true. */
+  mesh?: SpriteMesh;
+  /** True when the pixel source has been premultiplied by alpha. */
+  premultiplied?: boolean;
+  /** Sheet coordinates of the paired normal-map frame; matches the colour frame. */
+  normalMapFrame?: { x: number; y: number; w: number; h: number };
+  /** Source bitmap for the paired normal-map atlas. */
+  normalMapImage?: HTMLImageElement;
 }
 
 export interface PackSheet {
@@ -132,6 +155,36 @@ export interface PackerOptions {
   manualSheets?: ManualSheetDefinition[];
   /** Pack byte-identical sprites once while retaining one metadata entry per name. */
   aliasDuplicates?: boolean;
+  /**
+   * Transparent-pixel cleanup applied before trim/extrude/effects.
+   * - `keep`: leave source pixels untouched (default).
+   * - `clear`: force RGB to 0 wherever alpha === 0 to remove "colored transparent" fringes.
+   * - `bleed`: iteratively copy neighbour RGB into transparent pixels so bilinear
+   *   filtering does not sample background colours. Alpha stays unchanged.
+   * - `premultiply`: pre-multiply RGB by alpha; consumers can opt in via
+   *   {@link PackedItem.premultiplied}.
+   */
+  alphaHandling?: 'keep' | 'clear' | 'bleed' | 'premultiply';
+  /** Passes of 4-neighbour dilation used by `alphaHandling: 'bleed'`. */
+  alphaBleedIterations?: number;
+  /** When true, sprites whose name ends in a normal-map suffix are packed as paired normals. */
+  normalMapPairing?: boolean;
+  /** Case-insensitive suffixes used to auto-pair normal maps with their colour sprite. */
+  normalMapSuffixes?: string[];
+  /**
+   * When true, the placer permits bounding-rect overlaps between two sprites if
+   * their polygon outlines do not actually intersect. Implemented as a
+   * post-placement tighten pass — no change to the base MaxRects bookkeeping.
+   * Experimental: only near-convex outlines produced by Douglas-Peucker will
+   * pack noticeably tighter.
+   */
+  polygonPacking?: boolean;
+  /**
+   * When true, `PackedItem.mesh` is populated for sprites that have a polygon.
+   * The mesh is always computed as part of the polygon-outline trim pipeline;
+   * this flag only controls whether it is carried through to the output.
+   */
+  exportMesh?: boolean;
   effects?: SpriteEffects;
 }
 
@@ -415,6 +468,10 @@ export interface PreparedSprite {
   extrudePadding?: number;
   /** Optional polygon outline in trimmed-sprite coordinates [x0,y0,x1,y1,...] */
   polygon?: SpritePolygon;
+  /** Optional triangulated mesh built from `polygon`. Attached to output only when `PackerOptions.exportMesh` is true. */
+  mesh?: SpriteMesh;
+  /** True when the pixel source has been premultiplied by alpha. */
+  premultiplied?: boolean;
 }
 
 export function defaultPrepareSprite(item: ImageItem): PreparedSprite {
@@ -487,6 +544,10 @@ export function packIntoSheets(
           pixelSource: packed.pixelSource,
           extrudePadding: packed.extrudePadding,
           polygon: packed.polygon,
+          mesh: packed.mesh,
+          premultiplied: packed.premultiplied,
+          normalMapFrame: packed.normalMapFrame,
+          normalMapImage: packed.normalMapImage,
         })),
       ];
       const sheets = base.sheets.map((sheet) => ({
@@ -567,11 +628,166 @@ export function packIntoSheets(
   return bestResult!;
 }
 
+export interface TightenOptions {
+  polygonPacking: boolean;
+  shapePadding: number;
+  borderPadding: number;
+  maxWidth: number;
+  maxHeight: number;
+}
+
+/**
+ * Post-placement layout tightener. Shifts each already-placed sprite as far up
+ * and left as it can go while respecting:
+ *   - the atlas border (borderPadding),
+ *   - non-overlap with previously-placed sprites (rectangular check with
+ *     shapePadding + extrudePadding halos), and
+ *   - when `polygonPacking` is on and both items have polygons, the polygon-
+ *     level SAT check — two sprites are allowed to share a bounding rect as
+ *     long as their outlines do not intersect.
+ *
+ * Runs up to 3 iterations. MaxRects free-list bookkeeping is left untouched —
+ * this is a strictly additive optimization applied after normal packing.
+ */
+export function tightenLayout(
+  items: PackedItem[],
+  opts: TightenOptions,
+): PackedItem[] {
+  if (items.length < 2) return items;
+  const packed = items.map((item) => ({ ...item }));
+  const order = packed.map((_, i) => i);
+
+  const maxIter = 3;
+  const totalShiftCap = Math.max(opts.maxWidth, opts.maxHeight) * 2;
+  for (let iter = 0; iter < maxIter; iter++) {
+    let changed = false;
+    for (const idx of order) {
+      const item = packed[idx];
+      const ex = item.extrudePadding ?? 0;
+      const worldPoly = opts.polygonPacking ? itemWorldPoly(item) : undefined;
+
+      const shiftedLeft = probeShift(packed, idx, worldPoly, opts, 'left', totalShiftCap, ex);
+      if (shiftedLeft > 0) {
+        item.x -= shiftedLeft;
+        changed = true;
+      }
+      const shiftedUp = probeShift(packed, idx, worldPoly, opts, 'up', totalShiftCap, ex);
+      if (shiftedUp > 0) {
+        item.y -= shiftedUp;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  return packed;
+}
+
+function itemWorldPoly(item: PackedItem): SpritePolygon | undefined {
+  if (!item.polygon || item.polygon.length < 6) return undefined;
+  return item.rotated ? rotatePolygon90(item.polygon, item.height) : item.polygon;
+}
+
+function probeShift(
+  packed: PackedItem[],
+  idx: number,
+  worldPoly: SpritePolygon | undefined,
+  opts: TightenOptions,
+  dir: 'left' | 'up',
+  cap: number,
+  ex: number,
+): number {
+  const item = packed[idx];
+  const w = item.rotated ? item.height : item.width;
+  const h = item.rotated ? item.width : item.height;
+  const minX = opts.borderPadding + ex;
+  const minY = opts.borderPadding + ex;
+
+  const maxDelta = dir === 'left' ? item.x - minX : item.y - minY;
+  if (maxDelta <= 0) return 0;
+
+  const canShift = (delta: number): boolean => {
+    if (delta <= 0) return true;
+    const nx = dir === 'left' ? item.x - delta : item.x;
+    const ny = dir === 'up' ? item.y - delta : item.y;
+    if (nx < minX || ny < minY) return false;
+    return !anyCollision(packed, idx, nx, ny, w, h, ex, worldPoly, opts);
+  };
+
+  const limit = Math.min(maxDelta, cap);
+  let lo = 0;
+  let hi = limit;
+  while (hi > lo + 1) {
+    const mid = (lo + hi + 1) >>> 1;
+    if (canShift(mid)) lo = mid;
+    else hi = mid - 1;
+  }
+  if (canShift(hi)) lo = hi;
+  return lo;
+}
+
+function anyCollision(
+  packed: PackedItem[],
+  idx: number,
+  nx: number,
+  ny: number,
+  w: number,
+  h: number,
+  ex: number,
+  worldPoly: SpritePolygon | undefined,
+  opts: TightenOptions,
+): boolean {
+  for (let j = 0; j < packed.length; j++) {
+    if (j === idx) continue;
+    const other = packed[j];
+    const otherEx = other.extrudePadding ?? 0;
+    const ow = other.rotated ? other.height : other.width;
+    const oh = other.rotated ? other.width : other.height;
+
+    const polyA = worldPoly;
+    const polyB = opts.polygonPacking ? itemWorldPoly(other) : undefined;
+    const bothHavePolys = Boolean(polyA && polyB);
+
+    const gap = bothHavePolys ? 0 : opts.shapePadding + ex + otherEx;
+    const ax0 = nx - gap;
+    const ay0 = ny - gap;
+    const ax1 = nx + w + gap;
+    const ay1 = ny + h + gap;
+    const bx0 = other.x;
+    const by0 = other.y;
+    const bx1 = other.x + ow;
+    const by1 = other.y + oh;
+
+    const rectOverlap = !(ax1 <= bx0 || bx1 <= ax0 || ay1 <= by0 || by1 <= ay0);
+    if (!rectOverlap) continue;
+    if (!bothHavePolys || !polyA || !polyB) return true;
+
+    if (polyPolyCollide(polyA, nx, ny, polyB, other.x, other.y)) return true;
+  }
+  return false;
+}
+
 function packWithAlgorithm(
   items: ImageItem[],
   options: PackerOptions,
   prepare: SpritePreparer,
 ): PackResult {
+  // Auto-pair normal-map sprites with their colour counterpart and remove the
+  // normals from packing input — they will be drawn into a companion atlas that
+  // reuses the colour atlas's layout (see publish.ts). The paired normal image
+  // is attached to each PackedItem so downstream stages can render it.
+  let placementItems = items;
+  let normalPairs: NormalPair[] = [];
+  if (options.normalMapPairing) {
+    const suffixes = options.normalMapSuffixes && options.normalMapSuffixes.length > 0
+      ? options.normalMapSuffixes
+      : ['_n', '_nrm', '_normal'];
+    const detected = detectNormalPairs(items, suffixes);
+    normalPairs = detected.pairs;
+    placementItems = detected.unpaired;
+  }
+  const normalByColorId = new Map<string, NormalPair>();
+  for (const pair of normalPairs) normalByColorId.set(pair.colorId, pair);
+
   // Prepare (trim + extrude). The prepared bitmap is what goes into the atlas;
   // PreparedSprite.width/height represent the *trimmed* inner frame size; the
   // extrude halo lives only on the prepared bitmap. To make the packer reserve
@@ -580,7 +796,7 @@ function packWithAlgorithm(
   // dimensions when building the final PackedItem.
   const prepared: Map<string, PreparedSprite> = new Map();
   const placement: ImageItem[] = [];
-  for (const item of items) {
+  for (const item of placementItems) {
     const p = prepare(item, options);
     prepared.set(item.id, p);
     const ex = p.extrudePadding ?? 0;
@@ -646,12 +862,15 @@ function packWithAlgorithm(
     const enrichedPacked: PackedItem[] = placedInThisSheet.map((p) => {
       const prep = prepared.get(p.id) ?? defaultPrepareSprite(p);
       const ex = prep.extrudePadding ?? 0;
+      const finalX = p.x + ex;
+      const finalY = p.y + ex;
+      const pair = normalByColorId.get(p.id);
       return {
         ...p,
         // Offset placement by +ex so that x/y refers to the inner (engine-visible)
         // frame rather than the top-left of the halo region.
-        x: p.x + ex,
-        y: p.y + ex,
+        x: finalX,
+        y: finalY,
         sheetIndex,
         trimmed: prep.trim.trimmed,
         sourceSize: prep.trim.sourceSize,
@@ -662,14 +881,43 @@ function packWithAlgorithm(
         width: prep.width,
         height: prep.height,
         polygon: prep.polygon,
+        mesh: options.exportMesh ? prep.mesh : undefined,
+        premultiplied: prep.premultiplied ? true : undefined,
+        normalMapFrame: pair
+          ? { x: finalX, y: finalY, w: prep.width, h: prep.height }
+          : undefined,
+        normalMapImage: pair ? pair.normalItem.image : undefined,
       };
     });
+
+    const finalPacked = options.polygonPacking
+      ? tightenLayout(enrichedPacked, {
+          polygonPacking: true,
+          shapePadding: Math.max(options.shapePadding ?? options.padding ?? 0, 0),
+          borderPadding: Math.max(options.borderPadding ?? 0, 0),
+          maxWidth: sheetWidth,
+          maxHeight: sheetHeight,
+        }).map((item) =>
+          item.normalMapFrame
+            ? {
+                ...item,
+                // tightenLayout shifts x/y; keep the paired frame in lock-step.
+                normalMapFrame: {
+                  x: item.x,
+                  y: item.y,
+                  w: item.normalMapFrame.w,
+                  h: item.normalMapFrame.h,
+                },
+              }
+            : item,
+        )
+      : enrichedPacked;
 
     sheets.push({
       index: sheetIndex,
       width: sheetWidth,
       height: sheetHeight,
-      packed: enrichedPacked,
+      packed: finalPacked,
     });
 
     if (!options.multipack) {

@@ -1203,6 +1203,16 @@ export default function Inspector({ locale }: InspectorProps) {
           value={settings.multipack}
           onChange={(v) => setSettings({ multipack: v })}
         />
+        <ToggleRow
+          label={t.inspector.polygonPacking}
+          value={settings.polygonPacking ?? false}
+          onChange={(v) => setSettings({ polygonPacking: v })}
+        />
+        <ToggleRow
+          label={t.inspector.exportMesh}
+          value={settings.exportMesh ?? false}
+          onChange={(v) => setSettings({ exportMesh: v })}
+        />
         <Field label={t.inspector.multipackMode}>
           <select
             className="tp-input"
@@ -1359,6 +1369,78 @@ export default function Inspector({ locale }: InspectorProps) {
                   setSettings({ polygonTolerance: v });
                 }}
               />
+            </div>
+          )}
+        </div>
+
+        <div>
+          <div className="tp-label mb-1.5">{t.inspector.alphaHandling}</div>
+          <div className="grid grid-cols-4 gap-0.5 rounded-md border border-[var(--tp-border)] bg-[var(--tp-bg)] p-0.5">
+            {([
+              ['keep', t.inspector.alphaKeep],
+              ['clear', t.inspector.alphaClear],
+              ['bleed', t.inspector.alphaBleed],
+              ['premultiply', t.inspector.alphaPremul],
+            ] as const).map(([key, label]) => {
+              const active = (settings.alphaHandling ?? 'keep') === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setSettings({ alphaHandling: key })}
+                  className={`h-6 rounded text-[11px] transition ${
+                    active
+                      ? 'bg-[var(--tp-accent)] text-white'
+                      : 'text-[var(--tp-text-muted)] hover:bg-[var(--tp-panel-2)] hover:text-[var(--tp-text)]'
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          {(settings.alphaHandling ?? 'keep') === 'bleed' && (
+            <div className="mt-2">
+              <div className="tp-label mb-1.5">{t.inspector.alphaBleedIterations}</div>
+              <input
+                type="number"
+                min={1}
+                max={16}
+                className="tp-input tp-num"
+                value={settings.alphaBleedIterations ?? 4}
+                onChange={(e) => {
+                  const v = Math.max(1, Math.min(16, Math.floor(Number(e.target.value) || 1)));
+                  setSettings({ alphaBleedIterations: v });
+                }}
+              />
+            </div>
+          )}
+        </div>
+
+        <div>
+          <ToggleRow
+            label={t.inspector.normalMapPairing}
+            value={settings.normalMapPairing ?? false}
+            onChange={(v) => setSettings({ normalMapPairing: v })}
+          />
+          {(settings.normalMapPairing ?? false) && (
+            <div className="mt-2 space-y-2">
+              <div className="tp-label">{t.inspector.normalMapSuffixes}</div>
+              <input
+                type="text"
+                className="tp-input font-mono"
+                value={(settings.normalMapSuffixes ?? ['_n', '_nrm', '_normal']).join(',')}
+                onChange={(e) => {
+                  const parts = e.target.value
+                    .split(',')
+                    .map((s) => s.trim())
+                    .filter((s) => s.length > 0);
+                  setSettings({ normalMapSuffixes: parts });
+                }}
+              />
+              <div className="text-[10px] text-[var(--tp-text-dim)]">
+                {t.inspector.normalMapHint}
+              </div>
             </div>
           )}
         </div>

@@ -12,6 +12,7 @@ import StatusBar from './StatusBar';
 import AnimationPanel from './AnimationPanel';
 import PublishDialog from './PublishDialog';
 import ShortcutsDialog from './ShortcutsDialog';
+import CutterDialog from './CutterDialog';
 import { parseTpsPlist } from '@/lib/tpsCompat';
 import {
   createProjectDocument,
@@ -118,6 +119,7 @@ export default function AppShell({ locale }: AppShellProps) {
   const [dragSide, setDragSide] = useState<'left' | 'right' | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [cutterOpen, setCutterOpen] = useState(false);
 
   const addSpritesInputRef = useRef<HTMLInputElement>(null);
   const addFolderInputRef = useRef<HTMLInputElement>(null);
@@ -726,6 +728,9 @@ export default function AppShell({ locale }: AppShellProps) {
       } else if (meta && e.shiftKey && e.key.toLowerCase() === 'p') {
         e.preventDefault();
         handlePublish();
+      } else if (meta && e.shiftKey && e.key.toLowerCase() === 'x') {
+        e.preventDefault();
+        setCutterOpen(true);
       } else if (meta && e.key === '=') {
         e.preventDefault();
         useTpStore.getState().zoomIn();
@@ -753,6 +758,7 @@ export default function AppShell({ locale }: AppShellProps) {
     onAddSprites: handleAddSprites,
     onAddFolder: handleAddFolder,
     onWatchFolder: handleWatchFolder,
+    onOpenCutter: () => setCutterOpen(true),
     onPublish: handlePublish,
     onShowShortcuts: () => setShortcutsOpen(true),
   };
@@ -837,6 +843,12 @@ export default function AppShell({ locale }: AppShellProps) {
         locale={locale}
         isOpen={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}
+      />
+
+      <CutterDialog
+        locale={locale}
+        isOpen={cutterOpen}
+        onClose={() => setCutterOpen(false)}
       />
     </div>
   );

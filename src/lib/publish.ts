@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import { packIntoSheets, type PackResult, type PackSheet, type PackedItem, type ExportFormat, type PackerOptions } from './packer';
 import { getFormat } from './formats';
-import { encodePng8 } from './png8';
+import { encodePng8, type Png8EncodeOptions } from './png8';
 import type { PublishOptions, ScalingVariant } from './store';
 import { prepareSpriteForAtlas } from './imageProcessing';
 import { MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS } from './imageValidation';
@@ -164,6 +164,26 @@ export function scalePackSheet(sheet: PackSheet, scale: number): PackSheet {
       extrudePadding:
         item.extrudePadding === undefined ? undefined : coordinate(item.extrudePadding),
       polygon: item.polygon?.map(coordinate),
+      // Mesh vertices live in sprite-local (unrotated, frame-relative)
+      // coordinates. Scaling them alongside the frame keeps atlas consumers
+      // in sync with the scaled trimmed-frame dimensions; UVs are normalized
+      // to the frame so they stay untouched by scaling.
+      mesh: item.mesh
+        ? {
+            vertices: item.mesh.vertices.map(coordinate),
+            triangles: item.mesh.triangles.slice(),
+            uvs: item.mesh.uvs.slice(),
+          }
+        : undefined,
+      normalMapFrame: item.normalMapFrame
+        ? {
+            x: coordinate(item.normalMapFrame.x),
+            y: coordinate(item.normalMapFrame.y),
+            w: dimension(item.normalMapFrame.w),
+            h: dimension(item.normalMapFrame.h),
+          }
+        : undefined,
+      normalMapImage: item.normalMapImage,
     })),
   };
 }
@@ -221,6 +241,8 @@ function renderSheetToBlob(
   format: ImageFileFormatLite,
   quality: number,
   scalingAlgorithm: ScalingVariant['algorithm'] = 'bilinear',
+  png8Options?: Png8EncodeOptions,
+  layer: 'color' | 'normal' = 'color',
 ): Promise<Blob> {
   return new Promise((resolve, reject) => {
     if (sheet.width > MAX_IMAGE_DIMENSION || sheet.height > MAX_IMAGE_DIMENSION) {
@@ -256,6 +278,23 @@ function renderSheetToBlob(
       ctx.imageSmoothingQuality = scalingAlgorithm === 'bicubic' ? 'high' : 'medium';
     }
     sheet.packed.forEach((item: PackedItem) => {
+      // Normal-map pass: skip sprites without a paired normal, and draw the
+      // normal image at the colour frame's coordinates so both atlases share
+      // the same layout.
+      if (layer === 'normal') {
+        if (!item.normalMapImage || !item.normalMapFrame) return;
+        const nf = item.normalMapFrame;
+        ctx.save();
+        if (item.rotated) {
+          ctx.translate(nf.x + nf.h, nf.y);
+          ctx.rotate(Math.PI / 2);
+          ctx.drawImage(item.normalMapImage, 0, 0, nf.w, nf.h);
+        } else {
+          ctx.drawImage(item.normalMapImage, nf.x, nf.y, nf.w, nf.h);
+        }
+        ctx.restore();
+        return;
+      }
       const src = item.pixelSource ?? item.image;
       const ex = item.extrudePadding ?? 0;
       ctx.save();
@@ -269,7 +308,7 @@ function renderSheetToBlob(
       ctx.restore();
     });
     if (format === 'png-8') {
-      encodePng8(canvas).then(
+      encodePng8(canvas, png8Options).then(
         (b) => resolve(b),
         (error) => reject(error instanceof Error ? error : new Error(String(error))),
       );
@@ -428,11 +467,46 @@ export async function performPublish(ctx: PublishContext): Promise<PublishResult
           publishOptions.imageFormat,
           publishOptions.imageQuality,
           variant.algorithm,
+          {
+            maxColors: publishOptions.png8Colors,
+            dither: publishOptions.png8Dither,
+            ditherStrength: publishOptions.png8DitherStrength,
+          },
         );
       } catch (error) {
         throw publishImageError(imageNamesForScale[i], sheet, scale, error);
       }
       files.push({ name: imageNamesForScale[i], blob: imgBlob });
+
+      // Companion normal-map atlas — same layout, dedicated `_n.<ext>` file.
+      // Only emitted when at least one packed sprite on the sheet has a
+      // detected normal-map pair.
+      const hasNormalMap = sheet.packed.some((item) => item.normalMapImage && item.normalMapFrame);
+      let normalMapFileName: string | undefined;
+      if (hasNormalMap) {
+        const baseImage = imageNamesForScale[i];
+        const dot = baseImage.lastIndexOf('.');
+        normalMapFileName = dot > 0
+          ? `${baseImage.slice(0, dot)}_n${baseImage.slice(dot)}`
+          : `${baseImage}_n`;
+        try {
+          const normalBlob = await renderSheetToBlob(
+            sheet,
+            publishOptions.imageFormat,
+            publishOptions.imageQuality,
+            variant.algorithm,
+            {
+              maxColors: publishOptions.png8Colors,
+              dither: publishOptions.png8Dither,
+              ditherStrength: publishOptions.png8DitherStrength,
+            },
+            'normal',
+          );
+          files.push({ name: normalMapFileName, blob: normalBlob });
+        } catch (error) {
+          throw publishImageError(normalMapFileName, sheet, scale, error);
+        }
+      }
 
       const dataName = expandTemplate(publishOptions.dataFileTemplate, {
         name: fileName,
@@ -450,6 +524,7 @@ export async function performPublish(ctx: PublishContext): Promise<PublishResult
         imageFileName: (sheetIndex) => imageNamesForScale[sheetIndex] ?? imageNamesForScale[i],
         dataFileName: dataName,
         scale,
+        normalMapImageName: normalMapFileName,
       });
       files.push({
         name: dataName,
