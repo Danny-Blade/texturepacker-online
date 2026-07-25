@@ -3,8 +3,18 @@ import { packIntoSheets, type PackResult, type PackSheet, type PackedItem, type 
 import { getFormat } from './formats';
 import { encodePng8, type Png8EncodeOptions } from './png8';
 import type { PublishOptions, ScalingVariant } from './store';
-import { prepareSpriteForAtlas } from './imageProcessing';
+import { browserCanvasFactory, prepareSpriteForAtlas } from './imageProcessing';
+import { renderSheetCore } from '../core/renderer';
 import { MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS } from './imageValidation';
+import {
+  SMART_UPDATE_TOOL_VERSION,
+  computeImageContentHash,
+  computeSmartUpdateHash,
+  loadLastHashRecord,
+  outputsExist,
+  saveLastHashRecord,
+  type SmartUpdateInputs,
+} from './smartUpdate';
 
 export interface PublishContext {
   packResult: PackResult;
@@ -13,6 +23,11 @@ export interface PublishContext {
   fileName: string;
   dirHandle: FileSystemDirectoryHandle | null;
   packerOptions?: PackerOptions;
+  /**
+   * Bypass the Smart Update short-circuit and re-render/write every sheet.
+   * When omitted, `publishOptions.forcePublish` is used as the effective flag.
+   */
+  force?: boolean;
 }
 
 export interface PublishedFile {
@@ -261,52 +276,20 @@ function renderSheetToBlob(
       );
       return;
     }
-    const canvas = document.createElement('canvas');
-    canvas.width = sheet.width;
-    canvas.height = sheet.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
+    let canvas: HTMLCanvasElement;
+    try {
+      canvas = renderSheetCore(sheet, browserCanvasFactory, {
+        scalingAlgorithm,
+        layer,
+      }) as unknown as HTMLCanvasElement;
+    } catch (error) {
       reject(
         new Error(
-          `The browser could not allocate a ${sheet.width}×${sheet.height} canvas for sheet ${sheet.index + 1}. Enable Multipack or reduce the maximum atlas size.`,
+          `The browser could not allocate a ${sheet.width}×${sheet.height} canvas for sheet ${sheet.index + 1}. Enable Multipack or reduce the maximum atlas size. (${error instanceof Error ? error.message : String(error)})`,
         ),
       );
       return;
     }
-    ctx.imageSmoothingEnabled = scalingAlgorithm !== 'nearest';
-    if (ctx.imageSmoothingEnabled) {
-      ctx.imageSmoothingQuality = scalingAlgorithm === 'bicubic' ? 'high' : 'medium';
-    }
-    sheet.packed.forEach((item: PackedItem) => {
-      // Normal-map pass: skip sprites without a paired normal, and draw the
-      // normal image at the colour frame's coordinates so both atlases share
-      // the same layout.
-      if (layer === 'normal') {
-        if (!item.normalMapImage || !item.normalMapFrame) return;
-        const nf = item.normalMapFrame;
-        ctx.save();
-        if (item.rotated) {
-          ctx.translate(nf.x + nf.h, nf.y);
-          ctx.rotate(Math.PI / 2);
-          ctx.drawImage(item.normalMapImage, 0, 0, nf.w, nf.h);
-        } else {
-          ctx.drawImage(item.normalMapImage, nf.x, nf.y, nf.w, nf.h);
-        }
-        ctx.restore();
-        return;
-      }
-      const src = item.pixelSource ?? item.image;
-      const ex = item.extrudePadding ?? 0;
-      ctx.save();
-      if (item.rotated) {
-        ctx.translate(item.x + item.height, item.y);
-        ctx.rotate(Math.PI / 2);
-        ctx.drawImage(src, -ex, -ex, item.width + ex * 2, item.height + ex * 2);
-      } else {
-        ctx.drawImage(src, item.x - ex, item.y - ex, item.width + ex * 2, item.height + ex * 2);
-      }
-      ctx.restore();
-    });
     if (format === 'png-8') {
       encodePng8(canvas, png8Options).then(
         (b) => resolve(b),
@@ -392,6 +375,12 @@ export interface PublishResult {
   files: PublishedFile[];
   delivered: 'zip' | 'directory' | 'download';
   warnings: string[];
+  /** True when Smart Update determined the outputs were already up to date. */
+  skipped: boolean;
+  /** Filenames written on this publish, or the previously-written filenames when `skipped`. */
+  filenames: string[];
+  /** Machine-readable reason for a skip (e.g. `up-to-date`). Omitted on a normal publish. */
+  reason?: string;
 }
 
 function unpackedSpritesWarning(packResult: PackResult): string | null {
@@ -414,6 +403,33 @@ function publishImageError(
   );
 }
 
+async function buildSmartUpdateInputs(ctx: PublishContext): Promise<SmartUpdateInputs> {
+  const { packResult, publishOptions, exportFormat, fileName, packerOptions } = ctx;
+  const uniqueItems = new Map<string, PackedItem>();
+  for (const item of packResult.failed) uniqueItems.set(item.id, item);
+  for (const sheet of packResult.sheets) {
+    for (const item of sheet.packed) uniqueItems.set(item.id, item);
+  }
+  const images = await Promise.all(
+    Array.from(uniqueItems.values()).map(async (item) => ({
+      id: item.id,
+      name: item.name,
+      width: item.width,
+      height: item.height,
+      contentHash: item.contentHash ?? (await computeImageContentHash(item.url)),
+    })),
+  );
+  images.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return {
+    toolVersion: SMART_UPDATE_TOOL_VERSION,
+    images,
+    settings: (packerOptions ?? ({} as PackerOptions)),
+    publishOptions,
+    exportFormat,
+    fileName,
+  };
+}
+
 export async function performPublish(ctx: PublishContext): Promise<PublishResult> {
   const { packResult, publishOptions, exportFormat, fileName, dirHandle } = ctx;
   const sheets = packResult.sheets;
@@ -422,10 +438,36 @@ export async function performPublish(ctx: PublishContext): Promise<PublishResult
   if (unpackedWarning) warnings.push(unpackedWarning);
   if (sheets.length === 0) {
     if (unpackedWarning) throw new Error(unpackedWarning);
-    return { files: [], delivered: 'download', warnings };
+    return { files: [], delivered: 'download', warnings, skipped: false, filenames: [] };
   }
   const imageExt = imageExtFor(publishOptions.imageFormat);
   const dataExt = getFormat(exportFormat).extension;
+
+  const force = ctx.force ?? publishOptions.forcePublish ?? false;
+  let newHash = '';
+  if (!force) {
+    try {
+      const inputs = await buildSmartUpdateInputs(ctx);
+      newHash = await computeSmartUpdateHash(inputs);
+      const last = await loadLastHashRecord(dirHandle, fileName);
+      if (last && last.hash && last.hash === newHash && newHash !== '') {
+        if (!dirHandle || (await outputsExist(dirHandle, last.filenames))) {
+          return {
+            files: [],
+            delivered: dirHandle ? 'directory' : 'download',
+            warnings,
+            skipped: true,
+            filenames: [...last.filenames],
+            reason: 'up-to-date',
+          };
+        }
+      }
+    } catch {
+      // Any failure in Smart Update falls back to a normal publish — we must
+      // never let hashing errors silently block real work.
+      newHash = '';
+    }
+  }
 
   const files: PublishedFile[] = [];
 
@@ -525,6 +567,8 @@ export async function performPublish(ctx: PublishContext): Promise<PublishResult
         dataFileName: dataName,
         scale,
         normalMapImageName: normalMapFileName,
+        namespace: publishOptions.codeNamespace,
+        className: publishOptions.codeClassName,
       });
       files.push({
         name: dataName,
@@ -532,6 +576,24 @@ export async function performPublish(ctx: PublishContext): Promise<PublishResult
       });
     }
   }
+
+  const writtenFilenames = files.map((f) => f.name);
+  const rememberHash = async (delivered: PublishResult['delivered']): Promise<void> => {
+    if (!newHash) return;
+    // Only persist a hash record when we have somewhere to look it up later.
+    // Directory-backed publishes write a sidecar; downloads fall back to
+    // localStorage. ZIP downloads store under localStorage too so a re-publish
+    // to the same filename short-circuits when nothing has changed.
+    try {
+      await saveLastHashRecord(dirHandle, fileName, {
+        hash: newHash,
+        filenames: writtenFilenames,
+      });
+    } catch {
+      /* persistence is best-effort */
+    }
+    void delivered;
+  };
 
   if (publishOptions.bundleZip) {
     const zipName = `${fileName}.zip`;
@@ -552,13 +614,15 @@ export async function performPublish(ctx: PublishContext): Promise<PublishResult
       const reason = error instanceof Error ? error.message : String(error);
       throw new Error(`Could not download "${zipName}" (${reason}). Check browser download permissions.`);
     }
-    return { files, delivered: 'zip', warnings };
+    await rememberHash('zip');
+    return { files, delivered: 'zip', warnings, skipped: false, filenames: writtenFilenames };
   }
 
   if (dirHandle) {
     try {
       await writeToDir(dirHandle, files);
-      return { files, delivered: 'directory', warnings };
+      await rememberHash('directory');
+      return { files, delivered: 'directory', warnings, skipped: false, filenames: writtenFilenames };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       warnings.push(`Directory write failed (${reason}); files were downloaded instead.`);
@@ -575,5 +639,6 @@ export async function performPublish(ctx: PublishContext): Promise<PublishResult
       );
     }
   }
-  return { files, delivered: 'download', warnings };
+  await rememberHash('download');
+  return { files, delivered: 'download', warnings, skipped: false, filenames: writtenFilenames };
 }

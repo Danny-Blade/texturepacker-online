@@ -18,6 +18,16 @@ export interface FormatOptions {
    * current sheet. Formats may reference this in their exported metadata.
    */
   normalMapImageName?: string;
+  /**
+   * Optional namespace override for code-file generators (Swift/C#/C++). When
+   * omitted the generator picks its own convention-appropriate default.
+   */
+  namespace?: string;
+  /**
+   * Optional top-level class/enum/struct name for code-file generators (used by
+   * C# and Swift). When omitted the generator falls back to its default.
+   */
+  className?: string;
 }
 
 export interface FormatGenerator {

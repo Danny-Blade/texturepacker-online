@@ -18,6 +18,9 @@ import spriteKit from './spriteKit';
 import paper2d from './paper2d';
 import monoGame from './monoGame';
 import solar2d from './solar2d';
+import swift from './swift';
+import csharp from './csharp';
+import cpp from './cpp';
 
 export const FORMATS: Record<ExportFormat, FormatGenerator> = {
   json: jsonHash,
@@ -38,6 +41,9 @@ export const FORMATS: Record<ExportFormat, FormatGenerator> = {
   paper2d,
   monogame: monoGame,
   solar2d,
+  swift,
+  csharp,
+  cpp,
 };
 
 export const ALL_EXPORT_FORMATS: ExportFormat[] = [
@@ -59,6 +65,9 @@ export const ALL_EXPORT_FORMATS: ExportFormat[] = [
   'paper2d',
   'monogame',
   'solar2d',
+  'swift',
+  'csharp',
+  'cpp',
 ];
 
 export function getFormat(fmt: ExportFormat): FormatGenerator {
