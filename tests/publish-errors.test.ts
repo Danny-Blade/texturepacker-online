@@ -194,6 +194,6 @@ describe('publish resource errors', () => {
         ...baseContext,
         packResult: { sheets: [], failed: [], packed: [], width: 0, height: 0 },
       }),
-    ).resolves.toEqual({ files: [], delivered: 'download', warnings: [] });
+    ).resolves.toEqual({ files: [], delivered: 'download', warnings: [], skipped: false, filenames: [] });
   });
 });

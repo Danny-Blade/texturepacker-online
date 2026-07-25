@@ -69,8 +69,16 @@ function generate(format: ExportFormat): { output: string; imageRequests: number
 }
 
 describe('format generator compatibility fixtures', () => {
-  it('locks the complete 18-format set and extensions', () => {
-    expect(ALL_EXPORT_FORMATS).toEqual(goldenCases.map(({ format }) => format));
+  it('locks the 18-format golden data-format set and extensions', () => {
+    // Golden fixtures cover data-format generators. Code-file generators
+    // (Swift, C#, C++ — see tests/formats-code.test.ts) live in ALL_EXPORT_FORMATS
+    // too but do not participate in the golden fixture set, so we check the
+    // golden formats appear in ALL_EXPORT_FORMATS in the expected order rather
+    // than demanding array equality.
+    const codeFileFormats: ExportFormat[] = ['swift', 'csharp', 'cpp'];
+    expect(ALL_EXPORT_FORMATS.filter((f) => !codeFileFormats.includes(f))).toEqual(
+      goldenCases.map(({ format }) => format),
+    );
     expect(goldenCases).toHaveLength(18);
     for (const { format, extension } of goldenCases) {
       expect(getFormat(format).extension).toBe(extension);

@@ -78,10 +78,22 @@ function makeDirectoryMock() {
   const closed: string[] = [];
   const handle = {
     getFileHandle: vi.fn(async (name: string, options?: { create?: boolean }) => {
-      expect(options).toEqual({ create: true });
+      // Smart Update sidecar probes with `create: false`; unknown files
+      // must reject so the loader falls back cleanly.
+      if (!options?.create && !written.has(name)) {
+        throw new Error(`NotFoundError: ${name}`);
+      }
       return {
+        getFile: vi.fn(async () => {
+          const blob = written.get(name);
+          if (!blob) throw new Error(`NotFoundError: ${name}`);
+          return blob;
+        }),
         createWritable: vi.fn(async () => ({
-          write: vi.fn(async (blob: Blob) => {
+          write: vi.fn(async (data: Blob | string) => {
+            const blob = typeof data === 'string'
+              ? new Blob([data], { type: 'application/json' })
+              : data;
             written.set(name, blob);
           }),
           close: vi.fn(async () => {
@@ -92,6 +104,11 @@ function makeDirectoryMock() {
     }),
   };
   return { handle: handle as unknown as FileSystemDirectoryHandle, written, closed };
+}
+
+/** Publish output files, excluding the Smart Update sidecar bookkeeping file. */
+function outputKeys(written: Map<string, Blob>): string[] {
+  return Array.from(written.keys()).filter((name) => !name.startsWith('.wtp-smart-update'));
 }
 
 function options(imageFormat: 'jpg' | 'webp'): PublishOptions {
@@ -128,6 +145,7 @@ describe('performPublish browser encoding and directory delivery', () => {
 
     expect(result.delivered).toBe('directory');
     expect(result.warnings).toEqual([]);
+    expect(result.skipped).toBe(false);
     expect(result.files.map((file) => file.name)).toEqual([
       `atlas.${codec.extension}`,
       'atlas.json',
@@ -135,14 +153,17 @@ describe('performPublish browser encoding and directory delivery', () => {
     expect(encodingCalls).toEqual([
       { mime: codec.mime, quality: 0.73, width: 16, height: 8 },
     ]);
-    expect(directory.handle.getFileHandle).toHaveBeenCalledTimes(2);
-    expect(Array.from(directory.written.keys())).toEqual([
+    // Smart Update touches the sidecar in addition to the two atlas files.
+    expect(directory.handle.getFileHandle).toHaveBeenCalled();
+    expect(outputKeys(directory.written)).toEqual([
       `atlas.${codec.extension}`,
       'atlas.json',
     ]);
     expect(directory.written.get(`atlas.${codec.extension}`)?.type).toBe(codec.mime);
     expect(directory.written.get('atlas.json')?.type).toBe('text/plain');
-    expect(directory.closed).toEqual([`atlas.${codec.extension}`, 'atlas.json']);
+    expect(directory.closed).toEqual(
+      expect.arrayContaining([`atlas.${codec.extension}`, 'atlas.json']),
+    );
   });
 
   it('routes PNG-8 through the indexed encoder before directory delivery', async () => {

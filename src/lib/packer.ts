@@ -972,7 +972,10 @@ export type ExportFormat =
   | 'spritekit'
   | 'paper2d'
   | 'monogame'
-  | 'solar2d';
+  | 'solar2d'
+  | 'swift'
+  | 'csharp'
+  | 'cpp';
 
 // Format dispatch lives in lib/formats. Re-export it here for legacy import paths.
 export { generateExportData } from './formats';

@@ -2,8 +2,12 @@
   "name": "texturepacker-online",
   "version": "0.1.0",
   "private": true,
+  "bin": {
+    "wtp": "./bin/wtp.mjs"
+  },
   "scripts": {
     "worker:build": "node scripts/build-packer-worker.mjs && node scripts/build-png8-worker.mjs",
+    "cli:build": "node scripts/build-cli.mjs",
     "predev": "npm run worker:build",
     "dev": "next dev",
     "prebuild": "npm run worker:build",
@@ -12,7 +16,9 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "docker:build": "docker build -t wtp:local .",
+    "docker:run": "docker run --rm -p 3000:3000 wtp:local"
   },
   "dependencies": {
     "jszip": "^3.10.1",
@@ -22,6 +28,7 @@
     "zustand": "^5.0.13"
   },
   "devDependencies": {
+    "@napi-rs/canvas": "^1.0.2",
     "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",

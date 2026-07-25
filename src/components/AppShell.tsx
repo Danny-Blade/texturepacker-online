@@ -495,6 +495,17 @@ export default function AppShell({ locale }: AppShellProps) {
       showNotification(t.errors.noImages);
       return;
     }
+    useTpStore.setState({ publishMode: 'atlas' });
+    setPublishOpen(true);
+  }, [t.errors.noImages]);
+
+  const handleBatchConvert = useCallback(() => {
+    const { images, showNotification } = useTpStore.getState();
+    if (images.length === 0) {
+      showNotification(t.errors.noImages);
+      return;
+    }
+    useTpStore.setState({ publishMode: 'batch' });
     setPublishOpen(true);
   }, [t.errors.noImages]);
 
@@ -760,6 +771,7 @@ export default function AppShell({ locale }: AppShellProps) {
     onWatchFolder: handleWatchFolder,
     onOpenCutter: () => setCutterOpen(true),
     onPublish: handlePublish,
+    onOpenBatchConvert: handleBatchConvert,
     onShowShortcuts: () => setShortcutsOpen(true),
   };
 

@@ -6,8 +6,10 @@ import { useTpStore, type Png8DitherMode } from '@/lib/store';
 import { getTranslations, type Locale } from '@/lib/i18n';
 import { ALL_EXPORT_FORMATS, FORMATS } from '@/lib/formats';
 import { performPublish, previewFilenames } from '@/lib/publish';
+import { performBatchConvert } from '@/lib/batchConvert';
 import { encodePng8Pixels } from '@/lib/png8';
 import type { ExportFormat, PackSheet } from '@/lib/packer';
+import type { AlphaHandling } from '@/lib/imageProcessing';
 
 interface PublishDialogProps {
   locale: Locale;
@@ -29,29 +31,38 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
 
   const {
     publishOptions,
+    publishMode,
     exportFormat,
     fileName,
     packResult,
     dirHandle,
     settings,
+    images,
     setPublishOptions,
+    setPublishMode,
+    setSettings,
     setExportFormat,
     showNotification,
   } = useTpStore(
     useShallow((s) => ({
       publishOptions: s.publishOptions,
+      publishMode: s.publishMode,
       exportFormat: s.exportFormat,
       fileName: s.fileName,
       packResult: s.packResult,
       dirHandle: s.dirHandle,
       settings: s.settings,
+      images: s.images,
       setPublishOptions: s.setPublishOptions,
+      setPublishMode: s.setPublishMode,
+      setSettings: s.setSettings,
       setExportFormat: s.setExportFormat,
       showNotification: s.showNotification,
     })),
   );
 
   const [isPublishing, setIsPublishing] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
 
   const preview = useMemo(
     () =>
@@ -66,6 +77,10 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
   const sheetCount = Math.max(1, packResult?.sheets.length ?? 0);
   const scaleCount = Math.max(1, publishOptions.variants?.length ?? publishOptions.scales.length);
   const fileCount = preview.images.length + preview.dataFiles.length;
+
+  const currentExtension = FORMATS[exportFormat]?.extension;
+  const isCodeFileFormat =
+    currentExtension === 'swift' || currentExtension === 'cs' || currentExtension === 'hpp';
 
   const toggleScale = (scale: number) => {
     const has = publishOptions.scales.includes(scale);
@@ -101,10 +116,16 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
         fileName,
         dirHandle,
         packerOptions: settings,
+        force: publishOptions.forcePublish ?? false,
       });
-      const done = t.publish.done.replace('{n}', String(result.files.length));
+      const message = result.skipped
+        ? t.publish.skippedUnchanged
+        : (() => {
+            const done = t.publish.done.replace('{n}', String(result.files.length));
+            return result.warnings.length > 0 ? `${done} ${result.warnings.join(' ')}` : done;
+          })();
       showNotification(
-        result.warnings.length > 0 ? `${done} ${result.warnings.join(' ')}` : done,
+        message,
         result.warnings.length > 0 ? 8000 : 2500,
       );
       onClose();
@@ -114,6 +135,52 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
       showNotification(`${publishFailed}: ${reason}`, 8000);
     } finally {
       setIsPublishing(false);
+    }
+  };
+
+  const handleBatchConvert = async () => {
+    if (images.length === 0) {
+      showNotification(t.errors.noImages);
+      return;
+    }
+    if (publishOptions.scales.length === 0) {
+      showNotification(t.publish.emptyScales);
+      return;
+    }
+    setIsPublishing(true);
+    setBatchProgress({ done: 0, total: images.length * publishOptions.scales.length });
+    try {
+      const result = await performBatchConvert(
+        images,
+        {
+          imageFormat: publishOptions.imageFormat,
+          imageQuality: publishOptions.imageQuality,
+          scales: publishOptions.scales,
+          imageFileTemplate: publishOptions.imageFileTemplate,
+          alphaHandling: settings.alphaHandling ?? 'keep',
+          alphaBleedIterations: settings.alphaBleedIterations ?? 4,
+          premultiply: (settings.alphaHandling ?? 'keep') === 'premultiply',
+          png8Colors: publishOptions.png8Colors,
+          png8Dither: publishOptions.png8Dither,
+          png8DitherStrength: publishOptions.png8DitherStrength,
+          extrudePadding: settings.extrude ?? 0,
+          trimAlpha: publishOptions.batchTrimAlpha ?? false,
+          bundleZip: publishOptions.bundleZip,
+        },
+        {
+          dirHandle,
+          onProgress: (done, total) => setBatchProgress({ done, total }),
+        },
+      );
+      showNotification(t.publish.batchDone.replace('{n}', String(result.written.length)));
+      onClose();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : t.project.saveError;
+      const failed = locale === 'zh' ? '批量转换失败' : 'Batch convert failed';
+      showNotification(`${failed}: ${reason}`, 8000);
+    } finally {
+      setIsPublishing(false);
+      setBatchProgress(null);
     }
   };
 
@@ -133,6 +200,20 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
     .replace('{sheets}', String(sheetCount))
     .replace('{scales}', String(scaleCount))
     .replace('{files}', String(fileCount));
+
+  const isBatchMode = publishMode === 'batch';
+  const batchScaleCount = Math.max(1, publishOptions.scales.length);
+  const batchTotalFiles = images.length * batchScaleCount;
+  const batchSummaryText = t.publish.batchSummary
+    .replace('{images}', String(images.length))
+    .replace('{scales}', String(batchScaleCount))
+    .replace('{total}', String(batchTotalFiles));
+
+  const batchProgressText = batchProgress
+    ? t.publish.batchProgress
+        .replace('{done}', String(batchProgress.done))
+        .replace('{total}', String(batchProgress.total))
+    : '';
 
   const formatChoices: Array<{ key: 'png' | 'png-8' | 'jpg' | 'webp'; label: string }> = [
     { key: 'png', label: 'PNG' },
@@ -172,6 +253,28 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
 
         <div className="p-4 space-y-5">
           <section>
+            <span className={sectionTitleClass}>{t.publish.mode}</span>
+            <div
+              role="tablist"
+              aria-label={t.publish.mode}
+              className="flex items-center gap-1"
+            >
+              {(['atlas', 'batch'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="tab"
+                  aria-selected={publishMode === mode}
+                  onClick={() => setPublishMode(mode)}
+                  className={segBtn(publishMode === mode)}
+                >
+                  {mode === 'atlas' ? t.publish.modeAtlas : t.publish.modeBatch}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section>
             <span className={sectionTitleClass}>{t.publish.outputFiles}</span>
             <div className="grid grid-cols-1 gap-3">
               <label className="block">
@@ -185,37 +288,41 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
                   onChange={(e) => setPublishOptions({ imageFileTemplate: e.target.value })}
                 />
               </label>
-              <label className="block">
-                <span className="text-[11px] text-[var(--tp-text-muted)] mb-1 block">
-                  {t.publish.dataFile}
-                </span>
-                <input
-                  type="text"
-                  className="tp-input"
-                  value={publishOptions.dataFileTemplate}
-                  onChange={(e) => setPublishOptions({ dataFileTemplate: e.target.value })}
-                />
-              </label>
+              {!isBatchMode && (
+                <label className="block">
+                  <span className="text-[11px] text-[var(--tp-text-muted)] mb-1 block">
+                    {t.publish.dataFile}
+                  </span>
+                  <input
+                    type="text"
+                    className="tp-input"
+                    value={publishOptions.dataFileTemplate}
+                    onChange={(e) => setPublishOptions({ dataFileTemplate: e.target.value })}
+                  />
+                </label>
+              )}
               <div className="text-[10px] text-[var(--tp-text-dim)] leading-relaxed font-mono">
                 {t.publish.legend}
               </div>
-              <div className="rounded-md border border-[var(--tp-border)] bg-[var(--tp-bg)] p-2 max-h-32 overflow-auto">
-                <div className="text-[10px] text-[var(--tp-text-muted)] mb-1 uppercase tracking-wide">
-                  {t.publish.preview}
+              {!isBatchMode && (
+                <div className="rounded-md border border-[var(--tp-border)] bg-[var(--tp-bg)] p-2 max-h-32 overflow-auto">
+                  <div className="text-[10px] text-[var(--tp-text-muted)] mb-1 uppercase tracking-wide">
+                    {t.publish.preview}
+                  </div>
+                  <ul className="space-y-0.5 font-mono text-[11px] text-[var(--tp-text)]">
+                    {preview.images.map((name, i) => (
+                      <li key={`img-${i}`} className="truncate">
+                        {name}
+                      </li>
+                    ))}
+                    {preview.dataFiles.map((name, i) => (
+                      <li key={`data-${i}`} className="truncate text-[var(--tp-text-muted)]">
+                        {name}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
-                <ul className="space-y-0.5 font-mono text-[11px] text-[var(--tp-text)]">
-                  {preview.images.map((name, i) => (
-                    <li key={`img-${i}`} className="truncate">
-                      {name}
-                    </li>
-                  ))}
-                  {preview.dataFiles.map((name, i) => (
-                    <li key={`data-${i}`} className="truncate text-[var(--tp-text-muted)]">
-                      {name}
-                    </li>
-                  ))}
-                </ul>
-              </div>
+              )}
             </div>
           </section>
 
@@ -277,20 +384,59 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
             </div>
           </section>
 
-          <section>
-            <span className={sectionTitleClass}>{t.publish.dataFormat}</span>
-            <select
-              className="tp-input"
-              value={exportFormat}
-              onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
-            >
-              {ALL_EXPORT_FORMATS.map((fmt) => (
-                <option key={fmt} value={fmt}>
-                  {FORMATS[fmt].label}
-                </option>
-              ))}
-            </select>
-          </section>
+          {!isBatchMode && (
+            <section>
+              <span className={sectionTitleClass}>{t.publish.dataFormat}</span>
+              <select
+                className="tp-input"
+                value={exportFormat}
+                onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
+              >
+                {ALL_EXPORT_FORMATS.map((fmt) => (
+                  <option key={fmt} value={fmt}>
+                    {FORMATS[fmt].label}
+                  </option>
+                ))}
+              </select>
+              {isCodeFileFormat && (
+                <div className="mt-3 space-y-2 rounded-md border border-[var(--tp-border)] bg-[var(--tp-bg)] p-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="block">
+                      <span className="text-[11px] text-[var(--tp-text-muted)] mb-1 block">
+                        {t.publish.namespace}
+                      </span>
+                      <input
+                        type="text"
+                        className="tp-input"
+                        value={publishOptions.codeNamespace ?? ''}
+                        onChange={(e) =>
+                          setPublishOptions({
+                            codeNamespace: e.target.value === '' ? undefined : e.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-[11px] text-[var(--tp-text-muted)] mb-1 block">
+                        {t.publish.className}
+                      </span>
+                      <input
+                        type="text"
+                        className="tp-input"
+                        value={publishOptions.codeClassName ?? ''}
+                        onChange={(e) =>
+                          setPublishOptions({
+                            codeClassName: e.target.value === '' ? undefined : e.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+                  <p className="text-[10px] text-[var(--tp-text-dim)]">{t.publish.codeFileHint}</p>
+                </div>
+              )}
+            </section>
+          )}
 
           <section>
             <span className={sectionTitleClass}>{t.publish.scales}</span>
@@ -371,6 +517,85 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
             )}
           </section>
 
+          {isBatchMode && (
+            <>
+              <section>
+                <span className={sectionTitleClass}>{t.inspector.alphaHandling}</span>
+                <div className="grid grid-cols-4 gap-0.5 rounded-md border border-[var(--tp-border)] bg-[var(--tp-bg)] p-0.5">
+                  {(
+                    [
+                      ['keep', t.inspector.alphaKeep],
+                      ['clear', t.inspector.alphaClear],
+                      ['bleed', t.inspector.alphaBleed],
+                      ['premultiply', t.inspector.alphaPremul],
+                    ] as const
+                  ).map(([key, label]) => {
+                    const active = (settings.alphaHandling ?? 'keep') === key;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setSettings({ alphaHandling: key as AlphaHandling })}
+                        className={`h-6 rounded text-[11px] transition ${
+                          active
+                            ? 'bg-[var(--tp-accent)] text-white'
+                            : 'text-[var(--tp-text-muted)] hover:bg-[var(--tp-panel-2)] hover:text-[var(--tp-text)]'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {(settings.alphaHandling ?? 'keep') === 'bleed' && (
+                  <div className="mt-2">
+                    <span className="text-[11px] text-[var(--tp-text-muted)] mb-1 block">
+                      {t.inspector.alphaBleedIterations}
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={16}
+                      className="tp-input"
+                      value={settings.alphaBleedIterations ?? 4}
+                      onChange={(e) => {
+                        const v = Math.max(1, Math.min(16, Math.floor(Number(e.target.value) || 1)));
+                        setSettings({ alphaBleedIterations: v });
+                      }}
+                    />
+                  </div>
+                )}
+              </section>
+
+              <section>
+                <span className={sectionTitleClass}>{t.inspector.extrude}</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={32}
+                  className="tp-input"
+                  value={settings.extrude ?? 0}
+                  onChange={(e) => {
+                    const v = Math.max(0, Math.min(32, Math.floor(Number(e.target.value) || 0)));
+                    setSettings({ extrude: v });
+                  }}
+                />
+              </section>
+
+              <section>
+                <label className="inline-flex items-center gap-2 text-xs text-[var(--tp-text)] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(publishOptions.batchTrimAlpha)}
+                    onChange={(e) => setPublishOptions({ batchTrimAlpha: e.target.checked })}
+                    className="accent-[var(--tp-accent)]"
+                  />
+                  {t.publish.batchTrimAlpha}
+                </label>
+              </section>
+            </>
+          )}
+
           <section>
             <label className="inline-flex items-center gap-2 text-xs text-[var(--tp-text)] cursor-pointer">
               <input
@@ -381,15 +606,38 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
               />
               {t.publish.bundle}
             </label>
-            {fileCount > 2 && !publishOptions.bundleZip && (
+            {!isBatchMode && fileCount > 2 && !publishOptions.bundleZip && (
               <p className="mt-1 text-[10px] text-[var(--tp-text-dim)]">{t.publish.bundleHint}</p>
             )}
           </section>
 
+          {!isBatchMode && (
+            <section>
+              <label className="inline-flex items-center gap-2 text-xs text-[var(--tp-text)] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(publishOptions.forcePublish)}
+                  onChange={(e) => setPublishOptions({ forcePublish: e.target.checked })}
+                  className="accent-[var(--tp-accent)]"
+                />
+                {t.publish.forcePublish}
+              </label>
+              {publishOptions.forcePublish ? (
+                <p className="mt-1 text-[10px] text-[color:#f59e0b]">
+                  {t.publish.forcePublishHint}
+                </p>
+              ) : (
+                <p className="mt-1 text-[10px] text-[var(--tp-text-dim)]">
+                  {t.publish.smartUpdateEnabled}
+                </p>
+              )}
+            </section>
+          )}
+
           <section>
             <span className={sectionTitleClass}>{t.publish.summaryTitle}</span>
             <div className="rounded-md border border-[var(--tp-border)] bg-[var(--tp-bg)] px-3 py-2 text-xs text-[var(--tp-text)]">
-              {summaryText}
+              {isBatchMode ? batchSummaryText : summaryText}
             </div>
           </section>
         </div>
@@ -400,13 +648,19 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
           </button>
           <button
             type="button"
-            onClick={handlePublish}
+            onClick={isBatchMode ? handleBatchConvert : handlePublish}
             className="tp-btn tp-btn-primary"
             disabled={
-              isPublishing || !packResult || publishOptions.scales.length === 0
+              isPublishing
+              || publishOptions.scales.length === 0
+              || (isBatchMode ? images.length === 0 : !packResult)
             }
           >
-            {isPublishing ? t.publish.publishing : t.publish.publish}
+            {isBatchMode
+              ? (isPublishing
+                  ? (batchProgress ? batchProgressText : t.publish.publishing)
+                  : t.publish.batchConvert)
+              : (isPublishing ? t.publish.publishing : t.publish.publish)}
           </button>
         </footer>
       </div>

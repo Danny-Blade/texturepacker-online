@@ -29,6 +29,13 @@ export type ImageFileFormat = 'png' | 'png-8' | 'jpg' | 'webp';
 
 export type Png8DitherMode = 'none' | 'floyd-steinberg' | 'atkinson';
 
+/**
+ * `atlas` runs the standard MaxRects publish pipeline; `batch` skips packing
+ * entirely and produces one output image per input image via
+ * `performBatchConvert`.
+ */
+export type PublishMode = 'atlas' | 'batch';
+
 export interface ScalingVariant {
   id: string;
   name: string;
@@ -71,6 +78,18 @@ export interface PublishOptions {
   png8Dither?: Png8DitherMode;
   /** Multiplier applied to the diffused error for PNG-8 dithering (0..1). */
   png8DitherStrength?: number;
+  /**
+   * When true, `performPublish` re-renders every sheet even if the Smart Update
+   * hash matches the last successful publish. Off by default so unchanged
+   * publishes short-circuit and preserve existing outputs.
+   */
+  forcePublish?: boolean;
+  /** Namespace override for code-file formats (Swift/C#/C++). Undefined uses the generator default. */
+  codeNamespace?: string;
+  /** Class/enum/struct name override for code-file formats (Swift/C#). Undefined uses the generator default. */
+  codeClassName?: string;
+  /** Trim transparent edges before saving each converted image (batch mode only). */
+  batchTrimAlpha?: boolean;
 }
 
 export interface InspectorSectionState {
@@ -95,6 +114,7 @@ export interface TexturePackerState {
   selectedDirPath: string;
   dirHandle: FileSystemDirectoryHandle | null;
   publishOptions: PublishOptions;
+  publishMode: PublishMode;
   activeSheet: number;
 
   // viewport
@@ -155,6 +175,7 @@ export interface TexturePackerState {
   setSelectedDirPath: (p: string) => void;
   setDirHandle: (h: FileSystemDirectoryHandle | null) => void;
   setPublishOptions: (patch: Partial<PublishOptions>) => void;
+  setPublishMode: (mode: PublishMode) => void;
   setActiveSheet: (idx: number) => void;
 
   // actions — viewport
@@ -231,6 +252,8 @@ const initialPublishOptions: PublishOptions = {
   png8Colors: 256,
   png8Dither: 'none',
   png8DitherStrength: 1,
+  forcePublish: false,
+  batchTrimAlpha: false,
 };
 
 function runPackSync(images: ImageItem[], settings: PackerOptions): PackResult | null {
@@ -318,6 +341,7 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
   selectedDirPath: '',
   dirHandle: null,
   publishOptions: initialPublishOptions,
+  publishMode: 'atlas',
   activeSheet: 0,
 
   zoom: 1,
@@ -511,6 +535,7 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
   setDirHandle: (h) => set({ dirHandle: h }),
   setPublishOptions: (patch) =>
     set((s) => ({ publishOptions: { ...s.publishOptions, ...patch } })),
+  setPublishMode: (mode) => set({ publishMode: mode }),
   setActiveSheet: (idx) =>
     set((s) => {
       const total = s.packResult?.sheets.length ?? 0;

@@ -15,6 +15,7 @@ interface MenuBarProps {
   onWatchFolder?: () => void;
   onOpenCutter?: () => void;
   onPublish?: () => void;
+  onOpenBatchConvert?: () => void;
   onShowShortcuts?: () => void;
 }
 
@@ -40,6 +41,7 @@ export default function MenuBar({
   onWatchFolder,
   onOpenCutter,
   onPublish,
+  onOpenBatchConvert,
   onShowShortcuts,
 }: MenuBarProps) {
   const t = getTranslations(locale);
@@ -163,6 +165,11 @@ export default function MenuBar({
           label: t.menu.publish,
           shortcut: 'Ctrl+P',
           onClick: fallback(onPublish, 'Publish: not yet wired in Phase 1'),
+        },
+        {
+          key: 'batchConvert',
+          label: t.menu.batchConvert,
+          onClick: fallback(onOpenBatchConvert, 'Batch convert: not wired'),
         },
       ],
     },
