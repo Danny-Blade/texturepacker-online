@@ -27,6 +27,8 @@ export type SortMode = 'manual' | 'name-asc' | 'name-desc' | 'size-desc' | 'size
 
 export type ImageFileFormat = 'png' | 'png-8' | 'jpg' | 'webp';
 
+export type Png8DitherMode = 'none' | 'floyd-steinberg' | 'atkinson';
+
 export interface ScalingVariant {
   id: string;
   name: string;
@@ -63,6 +65,12 @@ export interface PublishOptions {
   imageFileTemplate: string; // supports {n}
   dataFileTemplate: string;
   bundleZip: boolean;
+  /** PNG-8 palette size, clamped to [16, 256]. Optional so older tests and project files stay compatible. */
+  png8Colors?: number;
+  /** PNG-8 error-diffusion dither. Alpha is preserved verbatim. */
+  png8Dither?: Png8DitherMode;
+  /** Multiplier applied to the diffused error for PNG-8 dithering (0..1). */
+  png8DitherStrength?: number;
 }
 
 export interface InspectorSectionState {
@@ -205,6 +213,12 @@ const initialSettings: PackerOptions = {
   multipackMode: 'auto',
   manualSheets: [{ id: 'sheet-main', name: 'Main' }],
   aliasDuplicates: false,
+  polygonPacking: false,
+  exportMesh: false,
+  alphaHandling: 'keep',
+  alphaBleedIterations: 4,
+  normalMapPairing: false,
+  normalMapSuffixes: ['_n', '_nrm', '_normal'],
 };
 
 const initialPublishOptions: PublishOptions = {
@@ -214,6 +228,9 @@ const initialPublishOptions: PublishOptions = {
   imageFileTemplate: '{name}{suffix}{n}.{ext}',
   dataFileTemplate: '{name}{suffix}{n}.{ext}',
   bundleZip: false,
+  png8Colors: 256,
+  png8Dither: 'none',
+  png8DitherStrength: 1,
 };
 
 function runPackSync(images: ImageItem[], settings: PackerOptions): PackResult | null {

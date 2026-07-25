@@ -126,31 +126,31 @@
 
 ## Phase 2：专业图集和压缩
 
-- [ ] **P2-01 实现真正的 Polygon Packer**
+- [x] **P2-01 实现真正的 Polygon Packer**
   - 实现轮廓凸分解、碰撞检测和允许矩形包围盒重叠的排布。
   - 与旋转、Padding、Multipack 和最大尺寸协同工作。
   - 对比 MaxRects 的面积利用率并增加性能基准。
 
-- [ ] **P2-02 实现网格三角化和标准 Mesh 导出**
+- [x] **P2-02 实现网格三角化和标准 Mesh 导出**
   - 生成 vertices、triangles、UV 和索引数据。
   - 验证旋转、裁切和缩放后的坐标变换。
   - 至少完成 Unity tight mesh 的实际导入验证。
 
-- [ ] **P2-03 实现 Normal Map 同布局打包**
+- [x] **P2-03 实现 Normal Map 同布局打包**
   - 支持自动识别、后缀识别和路径过滤。
   - 对主纹理与法线纹理应用相同的 trim、extrude、padding 和 layout。
   - 在一个数据文件中正确引用两张纹理。
 
-- [ ] **P2-04 实现 Alpha Handling**
+- [x] **P2-04 实现 Alpha Handling**
   - 支持 Keep Transparent Pixels、Clear Transparent Pixels、Alpha Bleeding 和 Premultiply Alpha。
   - 增加透明边缘颜色和渲染伪影测试。
 
-- [ ] **P2-05 实现 Dithering**
+- [x] **P2-05 实现 Dithering**
   - 支持 Floyd-Steinberg、Atkinson 及其 Alpha 版本。
   - 为低色深和 PNG-8 提供强度/算法选项。
   - 增加质量对比和性能测试。
 
-- [ ] **P2-06 完善 PNG-8 和 PNG 优化**
+- [x] **P2-06 完善 PNG-8 和 PNG 优化**
   - 支持可调颜色数量、透明色表和压缩等级。
   - 展示发布前后的文件体积与质量预览。
   - 将编码放入 Worker，避免阻塞 UI。
@@ -160,12 +160,12 @@
   - 根据需求再扩展 ASTC、ETC、PVRTC 和 DDS。
   - 明确浏览器内存、编码耗时和平台兼容限制。
 
-- [ ] **P2-08 实现自定义导出模板系统**
+- [x] **P2-08 实现自定义导出模板系统**
   - 支持变量、循环、条件和导出格式能力声明。
   - 提供安全沙箱、模板预览和错误定位。
   - 支持导入、导出和分享自定义模板。
 
-- [ ] **P2-09 实现 Sprite Sheet Cutter**
+- [x] **P2-09 实现 Sprite Sheet Cutter**
   - 支持 Grid/Strip、透明间隔和纯色背景切图。
   - 支持从 JSON、plist、atlas 等数据文件还原精灵。
   - 支持预览、选择、命名和批量导出。

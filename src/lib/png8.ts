@@ -21,6 +21,17 @@ export interface QuantizedImage {
   indices: Uint8Array;
 }
 
+export type Png8Dither = 'none' | 'floyd-steinberg' | 'atkinson';
+
+export interface Png8EncodeOptions {
+  /** Palette size, clamped to [1, 256]. */
+  maxColors?: number;
+  /** Error-diffusion dither. Alpha is preserved verbatim regardless of choice. */
+  dither?: Png8Dither;
+  /** Multiplier applied to the per-pixel error before diffusion (0..1). */
+  ditherStrength?: number;
+}
+
 const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
 const MAX_HISTOGRAM_SAMPLES = 262_144;
 
@@ -30,8 +41,6 @@ function clampColorCount(maxColors: number): number {
 }
 
 function packedRgba(r: number, g: number, b: number, a: number): number {
-  // RGB underneath a fully transparent pixel is not visible and should not
-  // consume several palette entries.
   if (a === 0) return 0;
   return (((r << 24) | (g << 16) | (b << 8) | a) >>> 0);
 }
@@ -100,8 +109,6 @@ function makeBox(colors: HistogramColor[]): ColorBox {
 
 function widestChannel(box: ColorBox): number {
   let channel = 0;
-  // Alpha differences are slightly more important than equally sized RGB
-  // differences because losing transparency creates visible halos.
   let widest = box.ranges[0];
   for (let i = 1; i < 4; i++) {
     const range = box.ranges[i] * (i === 3 ? 1.25 : 1);
@@ -200,8 +207,6 @@ function nearestPaletteIndex(
   for (let i = 0; i < palette.length; i += 4) {
     const paletteAlpha = palette[i + 3];
     const alphaDelta = paletteAlpha - a;
-    // Compare premultiplied RGB so hidden color in transparent pixels does not
-    // skew matching, while weighting alpha enough to retain clean edges.
     const dr = palette[i] * paletteAlpha - r * a;
     const dg = palette[i + 1] * paletteAlpha - g * a;
     const db = palette[i + 2] * paletteAlpha - b * a;
@@ -215,38 +220,53 @@ function nearestPaletteIndex(
   return bestIndex;
 }
 
-/** Quantize RGBA pixels to at most `maxColors` RGBA palette entries. */
-export function quantizeRgba(
+function normalizeEncodeOptions(
+  input?: Png8EncodeOptions | number,
+): Required<Png8EncodeOptions> {
+  const raw: Png8EncodeOptions =
+    typeof input === 'number'
+      ? { maxColors: input }
+      : input ?? {};
+  const rawStrength = raw.ditherStrength;
+  const strength = typeof rawStrength === 'number' && Number.isFinite(rawStrength)
+    ? Math.max(0, Math.min(1, rawStrength))
+    : 1;
+  return {
+    maxColors: clampColorCount(raw.maxColors ?? 256),
+    dither: raw.dither ?? 'none',
+    ditherStrength: strength,
+  };
+}
+
+interface DiffusionKernel {
+  entries: ReadonlyArray<readonly [number, number, number]>;
+}
+
+const FLOYD_STEINBERG: DiffusionKernel = {
+  entries: [
+    [1, 0, 7 / 16],
+    [-1, 1, 3 / 16],
+    [0, 1, 5 / 16],
+    [1, 1, 1 / 16],
+  ],
+};
+
+const ATKINSON: DiffusionKernel = {
+  entries: [
+    [1, 0, 1 / 8],
+    [2, 0, 1 / 8],
+    [-1, 1, 1 / 8],
+    [0, 1, 1 / 8],
+    [1, 1, 1 / 8],
+    [0, 2, 1 / 8],
+  ],
+};
+
+function assignIndicesNearest(
   rgba: Uint8Array | Uint8ClampedArray,
-  maxColors: number = 256,
-): QuantizedImage {
-  if (rgba.length === 0 || rgba.length % 4 !== 0) {
-    throw new Error('RGBA data must contain one or more complete pixels');
-  }
-  const colorCap = clampColorCount(maxColors);
-  const exact = exactHistogram(rgba, colorCap);
-  const histogram = exact ?? sampledHistogram(rgba);
-  const colors = Array.from(histogram, ([value, count]) => unpackColor(value, count));
-  const palette = exact
-    ? new Uint8Array(colors.flatMap((color) => [color.r, color.g, color.b, color.a]))
-    : createPalette(colors, colorCap);
+  palette: Uint8Array,
+): Uint8Array {
   const indices = new Uint8Array(rgba.length / 4);
-
-  if (exact) {
-    const paletteLookup = new Map<number, number>();
-    colors.forEach((color, index) => {
-      paletteLookup.set(packedRgba(color.r, color.g, color.b, color.a), index);
-    });
-    for (let pixel = 0; pixel < indices.length; pixel++) {
-      const i = pixel * 4;
-      indices[pixel] = paletteLookup.get(
-        packedRgba(rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]),
-      ) ?? 0;
-    }
-    return { palette, indices };
-  }
-
-  // Cache nearest-color results in a compact 5/5/5/4-bit RGBA lookup table.
   const nearestCache = new Uint16Array(1 << 19);
   for (let pixel = 0; pixel < indices.length; pixel++) {
     const i = pixel * 4;
@@ -264,7 +284,115 @@ export function quantizeRgba(
     }
     indices[pixel] = encodedIndex - 1;
   }
-  return { palette, indices };
+  return indices;
+}
+
+function assignIndicesDithered(
+  rgba: Uint8Array | Uint8ClampedArray,
+  width: number,
+  height: number,
+  palette: Uint8Array,
+  kernel: DiffusionKernel,
+  strength: number,
+): Uint8Array {
+  const indices = new Uint8Array(rgba.length / 4);
+  const rowStride = width * 3;
+  const rows: Float32Array[] = [
+    new Float32Array(rowStride),
+    new Float32Array(rowStride),
+    new Float32Array(rowStride),
+  ];
+  for (let y = 0; y < height; y++) {
+    const currentRow = rows[y % 3];
+    for (let x = 0; x < width; x++) {
+      const pi = y * width + x;
+      const i = pi * 4;
+      const a = rgba[i + 3];
+      if (a === 0) {
+        indices[pi] = nearestPaletteIndex(0, 0, 0, 0, palette);
+        continue;
+      }
+      const ex = currentRow[x * 3];
+      const eg = currentRow[x * 3 + 1];
+      const eb = currentRow[x * 3 + 2];
+      const rWanted = rgba[i] + ex;
+      const gWanted = rgba[i + 1] + eg;
+      const bWanted = rgba[i + 2] + eb;
+      const clampR = rWanted < 0 ? 0 : rWanted > 255 ? 255 : Math.round(rWanted);
+      const clampG = gWanted < 0 ? 0 : gWanted > 255 ? 255 : Math.round(gWanted);
+      const clampB = bWanted < 0 ? 0 : bWanted > 255 ? 255 : Math.round(bWanted);
+      const idx = nearestPaletteIndex(clampR, clampG, clampB, a, palette);
+      indices[pi] = idx;
+      const pr = palette[idx * 4];
+      const pg = palette[idx * 4 + 1];
+      const pb = palette[idx * 4 + 2];
+      const errR = (rWanted - pr) * strength;
+      const errG = (gWanted - pg) * strength;
+      const errB = (bWanted - pb) * strength;
+      for (const [dx, dy, weight] of kernel.entries) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || nx >= width || ny >= height) continue;
+        const targetRow = rows[ny % 3];
+        const j = nx * 3;
+        targetRow[j] += errR * weight;
+        targetRow[j + 1] += errG * weight;
+        targetRow[j + 2] += errB * weight;
+      }
+    }
+    currentRow.fill(0);
+  }
+  return indices;
+}
+
+/** Quantize RGBA pixels to at most `maxColors` RGBA palette entries. */
+export function quantizeRgba(
+  rgba: Uint8Array | Uint8ClampedArray,
+  options?: Png8EncodeOptions | number,
+  width?: number,
+  height?: number,
+): QuantizedImage {
+  if (rgba.length === 0 || rgba.length % 4 !== 0) {
+    throw new Error('RGBA data must contain one or more complete pixels');
+  }
+  const opts = normalizeEncodeOptions(options);
+  const exact = exactHistogram(rgba, opts.maxColors);
+  const histogram = exact ?? sampledHistogram(rgba);
+  const colors = Array.from(histogram, ([value, count]) => unpackColor(value, count));
+  const palette = exact
+    ? new Uint8Array(colors.flatMap((color) => [color.r, color.g, color.b, color.a]))
+    : createPalette(colors, opts.maxColors);
+
+  if (exact) {
+    const paletteLookup = new Map<number, number>();
+    colors.forEach((color, index) => {
+      paletteLookup.set(packedRgba(color.r, color.g, color.b, color.a), index);
+    });
+    const indices = new Uint8Array(rgba.length / 4);
+    for (let pixel = 0; pixel < indices.length; pixel++) {
+      const i = pixel * 4;
+      indices[pixel] = paletteLookup.get(
+        packedRgba(rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]),
+      ) ?? 0;
+    }
+    return { palette, indices };
+  }
+
+  if (opts.dither !== 'none') {
+    if (typeof width !== 'number' || typeof height !== 'number' || width <= 0 || height <= 0) {
+      throw new Error('Dithered quantization requires positive width and height');
+    }
+    if (rgba.length !== width * height * 4) {
+      throw new Error('RGBA data length does not match the provided width and height');
+    }
+    const kernel = opts.dither === 'atkinson' ? ATKINSON : FLOYD_STEINBERG;
+    return {
+      palette,
+      indices: assignIndicesDithered(rgba, width, height, palette, kernel, opts.ditherStrength),
+    };
+  }
+
+  return { palette, indices: assignIndicesNearest(rgba, palette) };
 }
 
 function writeUint32(target: Uint8Array, offset: number, value: number): void {
@@ -317,7 +445,6 @@ function adler32(bytes: Uint8Array): number {
   return ((b << 16) | a) >>> 0;
 }
 
-/** Standards-compliant zlib stream using uncompressed DEFLATE blocks. */
 function deflateStored(bytes: Uint8Array): Uint8Array {
   const blockCount = Math.max(1, Math.ceil(bytes.length / 65_535));
   const output = new Uint8Array(2 + bytes.length + blockCount * 5 + 4);
@@ -366,7 +493,6 @@ function indexedScanlines(
   const mask = (1 << bitDepth) - 1;
   for (let y = 0; y < height; y++) {
     const rowOffset = y * (rowBytes + 1);
-    // Filter byte remains 0 (None).
     for (let x = 0; x < width; x++) {
       const value = indices[y * width + x] & mask;
       const bitOffset = x * bitDepth;
@@ -391,7 +517,7 @@ export async function encodePng8Pixels(
   rgba: Uint8Array | Uint8ClampedArray,
   width: number,
   height: number,
-  maxColors: number = 256,
+  options?: Png8EncodeOptions | number,
 ): Promise<Uint8Array> {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
     throw new Error('PNG dimensions must be positive integers');
@@ -399,7 +525,8 @@ export async function encodePng8Pixels(
   if (rgba.length !== width * height * 4) {
     throw new Error('RGBA data length does not match PNG dimensions');
   }
-  const { palette, indices } = quantizeRgba(rgba, maxColors);
+  const opts = normalizeEncodeOptions(options);
+  const { palette, indices } = quantizeRgba(rgba, opts, width, height);
   const paletteSize = palette.length / 4;
   const bitDepth = paletteSize <= 2 ? 1 : paletteSize <= 4 ? 2 : paletteSize <= 16 ? 4 : 8;
 
@@ -407,7 +534,7 @@ export async function encodePng8Pixels(
   writeUint32(ihdr, 0, width);
   writeUint32(ihdr, 4, height);
   ihdr[8] = bitDepth;
-  ihdr[9] = 3; // indexed color
+  ihdr[9] = 3;
 
   const plte = new Uint8Array(paletteSize * 3);
   let lastTransparent = -1;
@@ -428,10 +555,125 @@ export async function encodePng8Pixels(
   return concatenate(parts);
 }
 
+// ---------------------------------------------------------------------------
+// Main-thread worker client
+// ---------------------------------------------------------------------------
+
+interface Png8WorkerDoneMessage {
+  id: number;
+  kind: 'done';
+  png: Uint8Array;
+}
+
+interface Png8WorkerErrorMessage {
+  id: number;
+  kind: 'error';
+  message: string;
+}
+
+export type Png8WorkerResponse = Png8WorkerDoneMessage | Png8WorkerErrorMessage;
+
+export interface Png8WorkerRequest {
+  id: number;
+  data: Uint8Array;
+  width: number;
+  height: number;
+  options: Required<Png8EncodeOptions>;
+}
+
+interface PendingEncode {
+  resolve: (bytes: Uint8Array) => void;
+  reject: (error: Error) => void;
+}
+
+let workerInstance: Worker | null = null;
+let workerUnavailable = false;
+let nextRequestId = 1;
+const pendingRequests = new Map<number, PendingEncode>();
+
+function failAllPending(reason: string): void {
+  const entries = Array.from(pendingRequests.entries());
+  pendingRequests.clear();
+  for (const [, job] of entries) {
+    job.reject(new Error(reason));
+  }
+}
+
+function ensurePng8Worker(): Worker | null {
+  if (workerUnavailable) return null;
+  if (workerInstance) return workerInstance;
+  if (typeof Worker === 'undefined') return null;
+  try {
+    const worker = new Worker('/png8.worker.js', { type: 'module' });
+    worker.addEventListener('message', (event: MessageEvent<Png8WorkerResponse>) => {
+      const message = event.data;
+      const job = pendingRequests.get(message.id);
+      if (!job) return;
+      pendingRequests.delete(message.id);
+      if (message.kind === 'done') {
+        job.resolve(message.png);
+      } else {
+        job.reject(new Error(message.message));
+      }
+    });
+    const failover = (reason: string): void => {
+      workerUnavailable = true;
+      workerInstance = null;
+      try {
+        worker.terminate();
+      } catch {
+        // ignore terminate failures
+      }
+      failAllPending(reason);
+    };
+    worker.addEventListener('error', () => failover('png8 worker error'));
+    worker.addEventListener('messageerror', () => failover('png8 worker message error'));
+    workerInstance = worker;
+    return worker;
+  } catch {
+    workerUnavailable = true;
+    return null;
+  }
+}
+
+async function encodeViaWorker(
+  data: Uint8Array,
+  width: number,
+  height: number,
+  options: Required<Png8EncodeOptions>,
+): Promise<Uint8Array | null> {
+  const worker = ensurePng8Worker();
+  if (!worker) return null;
+  const id = nextRequestId++;
+  const promise = new Promise<Uint8Array>((resolve, reject) => {
+    pendingRequests.set(id, { resolve, reject });
+  });
+  try {
+    const request: Png8WorkerRequest = { id, data, width, height, options };
+    worker.postMessage(request, [data.buffer]);
+  } catch (error) {
+    pendingRequests.delete(id);
+    workerUnavailable = true;
+    workerInstance = null;
+    try {
+      worker.terminate();
+    } catch {
+      // ignore
+    }
+    throw error instanceof Error ? error : new Error(String(error));
+  }
+  try {
+    return await promise;
+  } catch (error) {
+    if (workerInstance === null) workerUnavailable = true;
+    throw error;
+  }
+}
+
 /** Quantize a canvas and encode a real PLTE/tRNS indexed PNG. */
 export async function encodePng8(
   canvas: HTMLCanvasElement,
-  maxColors: number = 256,
+  options?: Png8EncodeOptions | number,
 ): Promise<Blob> {
   if (canvas.width <= 0 || canvas.height <= 0) {
     throw new Error('Cannot encode an empty canvas');
@@ -439,6 +681,35 @@ export async function encodePng8(
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error('Failed to read canvas pixels');
   const image = context.getImageData(0, 0, canvas.width, canvas.height);
-  const png = await encodePng8Pixels(image.data, canvas.width, canvas.height, maxColors);
+  const opts = normalizeEncodeOptions(options);
+  const source = image.data instanceof Uint8Array
+    ? image.data
+    : new Uint8Array(image.data.buffer, image.data.byteOffset, image.data.byteLength);
+  const payload = new Uint8Array(source.length);
+  payload.set(source);
+  let png: Uint8Array | null = null;
+  try {
+    png = await encodeViaWorker(payload, canvas.width, canvas.height, opts);
+  } catch {
+    png = null;
+  }
+  if (!png) {
+    png = await encodePng8Pixels(source, canvas.width, canvas.height, opts);
+  }
   return new Blob([png.slice()], { type: 'image/png' });
+}
+
+/** Test hook: reset the lazy worker singleton state. */
+export function __resetPng8WorkerForTests(): void {
+  if (workerInstance) {
+    try {
+      workerInstance.terminate();
+    } catch {
+      // ignore
+    }
+  }
+  workerInstance = null;
+  workerUnavailable = false;
+  pendingRequests.clear();
+  nextRequestId = 1;
 }

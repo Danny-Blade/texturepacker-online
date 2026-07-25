@@ -40,6 +40,9 @@ const base: PublishOptions = {
   imageFileTemplate: '{name}-{v}-{n0}-{n1}-{n}{suffix}.{ext}',
   dataFileTemplate: '{name}-{v}-{n0}-{n1}-{n}{suffix}.{ext}',
   bundleZip: false,
+  png8Colors: 256,
+  png8Dither: 'none',
+  png8DitherStrength: 1,
 };
 
 describe('Scaling Variants v2 publishing contracts', () => {

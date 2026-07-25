@@ -13,6 +13,7 @@ interface MenuBarProps {
   onAddSprites?: () => void;
   onAddFolder?: () => void;
   onWatchFolder?: () => void;
+  onOpenCutter?: () => void;
   onPublish?: () => void;
   onShowShortcuts?: () => void;
 }
@@ -37,6 +38,7 @@ export default function MenuBar({
   onAddSprites,
   onAddFolder,
   onWatchFolder,
+  onOpenCutter,
   onPublish,
   onShowShortcuts,
 }: MenuBarProps) {
@@ -148,6 +150,12 @@ export default function MenuBar({
           label: t.smartFolder.watchFolder,
           shortcut: 'Ctrl+Shift+W',
           onClick: fallback(onWatchFolder, t.smartFolder.notSupported),
+        },
+        {
+          key: 'cutSpriteSheet',
+          label: t.menu.cutSpriteSheet,
+          shortcut: 'Ctrl+Shift+X',
+          onClick: fallback(onOpenCutter, 'Cut sprite sheet: not wired'),
           separatorAfter: true,
         },
         {

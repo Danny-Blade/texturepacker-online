@@ -1,12 +1,13 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useTpStore } from '@/lib/store';
+import { useTpStore, type Png8DitherMode } from '@/lib/store';
 import { getTranslations, type Locale } from '@/lib/i18n';
 import { ALL_EXPORT_FORMATS, FORMATS } from '@/lib/formats';
 import { performPublish, previewFilenames } from '@/lib/publish';
-import type { ExportFormat } from '@/lib/packer';
+import { encodePng8Pixels } from '@/lib/png8';
+import type { ExportFormat, PackSheet } from '@/lib/packer';
 
 interface PublishDialogProps {
   locale: Locale;
@@ -237,6 +238,24 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
                 {t.publish.png8Hint}
               </p>
             )}
+            {publishOptions.imageFormat === 'png-8' && (
+              <Png8Controls
+                t={t}
+                colors={publishOptions.png8Colors ?? 256}
+                dither={publishOptions.png8Dither ?? 'none'}
+                strength={publishOptions.png8DitherStrength ?? 1}
+                onChange={(patch) => setPublishOptions(patch)}
+              />
+            )}
+            {publishOptions.imageFormat === 'png-8' && packResult && packResult.sheets.length > 0 && (
+              <Png8Preview
+                t={t}
+                sheet={packResult.sheets[0]}
+                colors={publishOptions.png8Colors ?? 256}
+                dither={publishOptions.png8Dither ?? 'none'}
+                strength={publishOptions.png8DitherStrength ?? 1}
+              />
+            )}
             <div className={`mt-3 ${qualityDisabled ? 'opacity-50' : ''}`}>
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[11px] text-[var(--tp-text-muted)]">{t.publish.imageQuality}</span>
@@ -393,4 +412,246 @@ export default function PublishDialog({ locale, isOpen, onClose }: PublishDialog
       </div>
     </div>
   );
+}
+
+type PublishStrings = ReturnType<typeof getTranslations>['publish'];
+
+interface Png8ControlsProps {
+  t: { publish: PublishStrings };
+  colors: number;
+  dither: Png8DitherMode;
+  strength: number;
+  onChange: (patch: {
+    png8Colors?: number;
+    png8Dither?: Png8DitherMode;
+    png8DitherStrength?: number;
+  }) => void;
+}
+
+function Png8Controls({ t, colors, dither, strength, onChange }: Png8ControlsProps) {
+  const clampedColors = Math.max(16, Math.min(256, Math.round(colors)));
+  const clampedStrength = Math.max(0, Math.min(1, strength));
+  return (
+    <div className="mt-3 space-y-3 rounded-md border border-[var(--tp-border)] bg-[var(--tp-bg)] p-2">
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] text-[var(--tp-text-muted)]">{t.publish.png8Colors}</span>
+          <span className="text-[11px] tabular-nums text-[var(--tp-text)]">{clampedColors}</span>
+        </div>
+        <input
+          type="range"
+          min={16}
+          max={256}
+          step={8}
+          value={clampedColors}
+          onChange={(e) => onChange({ png8Colors: Number(e.target.value) })}
+          className="w-full"
+          aria-label={t.publish.png8Colors}
+        />
+      </div>
+      <div>
+        <span className="text-[11px] text-[var(--tp-text-muted)] mb-1 block">
+          {t.publish.png8Dither}
+        </span>
+        <select
+          className="tp-input"
+          value={dither}
+          onChange={(e) => onChange({ png8Dither: e.target.value as Png8DitherMode })}
+          aria-label={t.publish.png8Dither}
+        >
+          <option value="none">{t.publish.png8DitherNone}</option>
+          <option value="floyd-steinberg">{t.publish.png8DitherFloyd}</option>
+          <option value="atkinson">{t.publish.png8DitherAtkinson}</option>
+        </select>
+      </div>
+      {dither !== 'none' && (
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] text-[var(--tp-text-muted)]">
+              {t.publish.png8DitherStrength}
+            </span>
+            <span className="text-[11px] tabular-nums text-[var(--tp-text)]">
+              {Math.round(clampedStrength * 100)}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={Math.round(clampedStrength * 100)}
+            onChange={(e) => onChange({ png8DitherStrength: Number(e.target.value) / 100 })}
+            className="w-full"
+            aria-label={t.publish.png8DitherStrength}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface Png8PreviewProps {
+  t: { publish: PublishStrings };
+  sheet: PackSheet;
+  colors: number;
+  dither: Png8DitherMode;
+  strength: number;
+}
+
+interface Png8PreviewState {
+  originalBytes: number;
+  quantizedBytes: number;
+  thumbnailUrl: string;
+  width: number;
+  height: number;
+}
+
+const MAX_PREVIEW_EDGE = 200;
+
+/**
+ * Render sheet[0] into an offscreen canvas, encode both a regular PNG and the
+ * PNG-8 variant with the current controls, and surface size/thumbnail metrics.
+ *
+ * The whole pipeline stays inside a `useEffect` so it can be cancelled if the
+ * user tweaks the slider mid-encode.
+ */
+function Png8Preview({ t, sheet, colors, dither, strength }: Png8PreviewProps) {
+  const [state, setState] = useState<Png8PreviewState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const requestId = useRef(0);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const currentRequest = ++requestId.current;
+    let cancelled = false;
+    let objectUrl: string | null = null;
+
+    const scale = Math.min(1, MAX_PREVIEW_EDGE / Math.max(sheet.width, sheet.height));
+    const width = Math.max(1, Math.round(sheet.width * scale));
+    const height = Math.max(1, Math.round(sheet.height * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) {
+      // Defer to the next microtask so React sees the effect finish first.
+      queueMicrotask(() => {
+        if (requestId.current === currentRequest) setError('Preview unavailable in this browser.');
+      });
+      return;
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'medium';
+    for (const item of sheet.packed) {
+      const src = item.pixelSource ?? item.image;
+      if (!src) continue;
+      const ex = item.extrudePadding ?? 0;
+      ctx.save();
+      if (item.rotated) {
+        ctx.translate((item.x + item.height) * scale, item.y * scale);
+        ctx.rotate(Math.PI / 2);
+        ctx.drawImage(
+          src,
+          -ex * scale,
+          -ex * scale,
+          (item.width + ex * 2) * scale,
+          (item.height + ex * 2) * scale,
+        );
+      } else {
+        ctx.drawImage(
+          src,
+          (item.x - ex) * scale,
+          (item.y - ex) * scale,
+          (item.width + ex * 2) * scale,
+          (item.height + ex * 2) * scale,
+        );
+      }
+      ctx.restore();
+    }
+
+    const run = async (): Promise<void> => {
+      try {
+        const originalBlob = await new Promise<Blob | null>((resolve) => {
+          canvas.toBlob((b) => resolve(b), 'image/png');
+        });
+        if (cancelled || requestId.current !== currentRequest) return;
+        const imageData = ctx.getImageData(0, 0, width, height);
+        const png8 = await encodePng8Pixels(imageData.data, width, height, {
+          maxColors: colors,
+          dither,
+          ditherStrength: strength,
+        });
+        if (cancelled || requestId.current !== currentRequest) return;
+        const png8Blob = new Blob([png8.slice()], { type: 'image/png' });
+        objectUrl = URL.createObjectURL(png8Blob);
+        setError(null);
+        setState({
+          originalBytes: originalBlob ? originalBlob.size : 0,
+          quantizedBytes: png8Blob.size,
+          thumbnailUrl: objectUrl,
+          width,
+          height,
+        });
+      } catch (err) {
+        if (cancelled || requestId.current !== currentRequest) return;
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    };
+    void run();
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [sheet, colors, dither, strength]);
+
+  const ratio = state && state.originalBytes > 0
+    ? state.quantizedBytes / state.originalBytes
+    : null;
+
+  return (
+    <div className="mt-3 rounded-md border border-[var(--tp-border)] bg-[var(--tp-bg)] p-2">
+      <div className="text-[10px] text-[var(--tp-text-muted)] uppercase tracking-wide mb-2">
+        {t.publish.png8Preview}
+      </div>
+      {error ? (
+        <p className="text-[11px] text-[var(--tp-danger)]">{error}</p>
+      ) : !state ? (
+        <p className="text-[11px] text-[var(--tp-text-muted)]">…</p>
+      ) : (
+        <div className="flex items-start gap-3">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={state.thumbnailUrl}
+            alt=""
+            className="rounded border border-[var(--tp-border)]"
+            style={{ maxWidth: MAX_PREVIEW_EDGE, maxHeight: MAX_PREVIEW_EDGE }}
+          />
+          <dl className="text-[11px] text-[var(--tp-text)] space-y-1 flex-1 min-w-0">
+            <div className="flex justify-between gap-2">
+              <dt className="text-[var(--tp-text-muted)]">{t.publish.png8OriginalSize}</dt>
+              <dd className="tabular-nums">{formatBytes(state.originalBytes)}</dd>
+            </div>
+            <div className="flex justify-between gap-2">
+              <dt className="text-[var(--tp-text-muted)]">{t.publish.png8QuantizedSize}</dt>
+              <dd className="tabular-nums">{formatBytes(state.quantizedBytes)}</dd>
+            </div>
+            {ratio !== null && (
+              <div className="flex justify-between gap-2">
+                <dt className="text-[var(--tp-text-muted)]">{t.publish.png8Ratio}</dt>
+                <dd className="tabular-nums">{Math.round(ratio * 100)}%</dd>
+              </div>
+            )}
+          </dl>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }

@@ -48,6 +48,11 @@ const spine: FormatGenerator = {
     out += `format: RGBA8888\n`;
     out += `filter: Linear,Linear\n`;
     out += `repeat: none\n`;
+    if (opts.normalMapImageName) {
+      // Custom extension line; Spine's parser tolerates unknown key/value
+      // header entries and consumers that scan for it can pick up the pair.
+      out += `normalMap: ${opts.normalMapImageName}\n`;
+    }
     for (const item of sheet.packed) {
       const fw = item.rotated ? item.height : item.width;
       const fh = item.rotated ? item.width : item.height;

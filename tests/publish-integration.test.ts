@@ -102,6 +102,9 @@ function options(imageFormat: 'jpg' | 'webp'): PublishOptions {
     imageFileTemplate: '{name}{suffix}{n}.{ext}',
     dataFileTemplate: '{name}{suffix}{n}.{ext}',
     bundleZip: false,
+    png8Colors: 256,
+    png8Dither: 'none',
+    png8DitherStrength: 1,
   };
 }
 

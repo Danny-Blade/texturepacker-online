@@ -11,6 +11,7 @@ interface ToolbarProps {
   onSaveProjectAs?: () => void;
   onAddSprites?: () => void;
   onAddFolder?: () => void;
+  onOpenCutter?: () => void;
   onPublish?: () => void;
 }
 
@@ -20,6 +21,7 @@ type IconName =
   | 'save'
   | 'image-plus'
   | 'folder-plus'
+  | 'scissors'
   | 'package';
 
 function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
@@ -74,6 +76,16 @@ function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
           <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
           <path d="M12 11v6" />
           <path d="M9 14h6" />
+        </svg>
+      );
+    case 'scissors':
+      return (
+        <svg {...common}>
+          <circle cx="6" cy="6" r="3" />
+          <circle cx="6" cy="18" r="3" />
+          <path d="M20 4L8.12 15.88" />
+          <path d="M14.47 14.48L20 20" />
+          <path d="M8.12 8.12L12 12" />
         </svg>
       );
     case 'package':
@@ -146,6 +158,7 @@ export default function Toolbar({
   onSaveProjectAs: _onSaveProjectAs,
   onAddSprites,
   onAddFolder,
+  onOpenCutter,
   onPublish,
 }: ToolbarProps) {
   const t = getTranslations(locale);
@@ -181,6 +194,10 @@ export default function Toolbar({
     if (onAddFolder) onAddFolder();
     else notify('Add folder: not yet wired in Phase 1');
   };
+  const handleOpenCutter = () => {
+    if (onOpenCutter) onOpenCutter();
+    else notify('Cut sprite sheet: not wired');
+  };
   const handlePublish = () => {
     if (onPublish) onPublish();
     else notify('Publish: not yet wired in Phase 1');
@@ -215,6 +232,10 @@ export default function Toolbar({
         title={t.toolbar.tooltipAddFolder}
         onClick={handleAddFolder}
       />
+
+      <Divider />
+
+      <ToolButton icon="scissors" title={t.toolbar.cutter} onClick={handleOpenCutter} />
 
       <button
         type="button"

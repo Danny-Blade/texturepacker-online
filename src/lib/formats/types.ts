@@ -12,6 +12,12 @@ export interface FormatOptions {
    * contains physical output coordinates for this scale.
    */
   scale?: number;
+  /**
+   * File name of the companion normal-map atlas (e.g. `spritesheet_n.png`).
+   * Only set when {@link PackerOptions.normalMapPairing} produced pairs for the
+   * current sheet. Formats may reference this in their exported metadata.
+   */
+  normalMapImageName?: string;
 }
 
 export interface FormatGenerator {
