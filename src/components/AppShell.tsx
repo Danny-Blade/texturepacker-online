@@ -751,6 +751,17 @@ export default function AppShell({ locale }: AppShellProps) {
       } else if (meta && e.key === '0') {
         e.preventDefault();
         useTpStore.getState().resetView();
+      } else if (meta && e.shiftKey && e.key.toLowerCase() === 'z') {
+        // Cmd+Shift+Z is the macOS redo convention; keep it before the plain
+        // Ctrl+Z branch so the shift modifier is not swallowed.
+        e.preventDefault();
+        useTpStore.getState().redo();
+      } else if (meta && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        useTpStore.getState().undo();
+      } else if (meta && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        useTpStore.getState().redo();
       } else if (!meta && e.key === '?') {
         e.preventDefault();
         setShortcutsOpen(true);
@@ -759,6 +770,9 @@ export default function AppShell({ locale }: AppShellProps) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [handleSaveProject, handleOpenProject, handleNewProject, handlePublish]);
+
+  const handleUndo = useCallback(() => useTpStore.getState().undo(), []);
+  const handleRedo = useCallback(() => useTpStore.getState().redo(), []);
 
   const handlerProps = {
     locale,
@@ -773,6 +787,8 @@ export default function AppShell({ locale }: AppShellProps) {
     onPublish: handlePublish,
     onOpenBatchConvert: handleBatchConvert,
     onShowShortcuts: () => setShortcutsOpen(true),
+    onUndo: handleUndo,
+    onRedo: handleRedo,
   };
 
   return (

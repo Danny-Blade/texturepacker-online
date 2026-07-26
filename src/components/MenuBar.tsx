@@ -2,7 +2,23 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useTpStore } from '@/lib/store';
-import { getTranslations, type Locale } from '@/lib/i18n';
+import { getTranslations, locales, type Locale } from '@/lib/i18n';
+
+const LOCALE_LABELS: Record<Locale, string> = {
+  en: 'English',
+  zh: '中文',
+  ja: '日本語',
+  ko: '한국어',
+  es: 'Español',
+};
+
+const LOCALE_HREFS: Record<Locale, string> = {
+  en: '/',
+  zh: '/zh',
+  ja: '/ja',
+  ko: '/ko',
+  es: '/es',
+};
 
 interface MenuBarProps {
   locale: Locale;
@@ -17,6 +33,8 @@ interface MenuBarProps {
   onPublish?: () => void;
   onOpenBatchConvert?: () => void;
   onShowShortcuts?: () => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
 }
 
 type MenuKey = 'file' | 'edit' | 'view' | 'effects' | 'help';
@@ -43,10 +61,15 @@ export default function MenuBar({
   onPublish,
   onOpenBatchConvert,
   onShowShortcuts,
+  onUndo,
+  onRedo,
 }: MenuBarProps) {
   const t = getTranslations(locale);
   const [openMenu, setOpenMenu] = useState<MenuKey | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
+  // Subscribe so the disabled state re-renders when the history stack changes.
+  const canUndo = useTpStore((s) => s.history.past.length > 0);
+  const canRedo = useTpStore((s) => s.history.future.length > 0);
 
   useEffect(() => {
     if (!openMenu) return;
@@ -176,6 +199,21 @@ export default function MenuBar({
     edit: {
       label: t.menu.edit,
       items: [
+        {
+          key: 'undo',
+          label: t.menu.undo,
+          shortcut: t.menu.shortcutUndo,
+          disabled: !canUndo,
+          onClick: onUndo ?? (() => useTpStore.getState().undo()),
+        },
+        {
+          key: 'redo',
+          label: t.menu.redo,
+          shortcut: t.menu.shortcutRedo,
+          disabled: !canRedo,
+          onClick: onRedo ?? (() => useTpStore.getState().redo()),
+          separatorAfter: true,
+        },
         { key: 'remove', label: t.menu.removeSelected, shortcut: 'Del', onClick: handleRemoveSelected },
         { key: 'selectAll', label: t.menu.selectAll, shortcut: 'Ctrl+A', onClick: handleSelectAll },
         { key: 'clearSel', label: t.menu.clearSelection, shortcut: 'Esc', onClick: handleClearSelection },
@@ -214,11 +252,26 @@ export default function MenuBar({
 
   const handleTopClick = (key: MenuKey) => {
     setOpenMenu((cur) => (cur === key ? null : key));
+    setLangOpen(false);
   };
 
   const handleTopEnter = (key: MenuKey) => {
     if (openMenu !== null && openMenu !== key) setOpenMenu(key);
   };
+
+  const [langOpen, setLangOpen] = useState(false);
+  const langRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!langOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (langRef.current && !langRef.current.contains(e.target as Node)) {
+        setLangOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [langOpen]);
 
   const handleItemClick = (item: MenuItemDef) => {
     if (item.disabled) return;
@@ -320,6 +373,72 @@ export default function MenuBar({
             </div>
           );
         })}
+      </div>
+      <div className="ml-auto flex items-center h-full pr-2" ref={langRef}>
+        <div className="relative h-full flex items-center">
+          <button
+            type="button"
+            aria-label={t.nav.language}
+            data-testid="locale-switcher"
+            className="text-xs h-full flex items-center transition-colors"
+            style={{
+              padding: '0 10px',
+              background: langOpen ? 'var(--tp-panel-2)' : 'transparent',
+              color: 'var(--tp-text)',
+            }}
+            onClick={() => {
+              setOpenMenu(null);
+              setLangOpen((cur) => !cur);
+            }}
+            onMouseOver={(e) => {
+              if (!langOpen) e.currentTarget.style.background = 'var(--tp-panel-2)';
+            }}
+            onMouseOut={(e) => {
+              if (!langOpen) e.currentTarget.style.background = 'transparent';
+            }}
+          >
+            <span>{LOCALE_LABELS[locale]}</span>
+            <span aria-hidden className="ml-1" style={{ color: 'var(--tp-text-dim)', fontSize: 10 }}>▾</span>
+          </button>
+          {langOpen && (
+            <div
+              className="absolute top-full right-0 z-50 shadow-lg py-1"
+              style={{
+                minWidth: 160,
+                background: 'var(--tp-panel)',
+                border: '1px solid var(--tp-border)',
+              }}
+            >
+              {locales.map((code) => {
+                const active = code === locale;
+                return (
+                  <a
+                    key={code}
+                    href={LOCALE_HREFS[code]}
+                    data-locale={code}
+                    className="w-full flex items-center justify-between text-xs text-left transition-colors no-underline"
+                    style={{
+                      padding: '6px 12px',
+                      color: 'var(--tp-text)',
+                      background: active ? 'var(--tp-accent-soft)' : 'transparent',
+                      fontWeight: active ? 600 : 400,
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!active) e.currentTarget.style.background = 'var(--tp-accent-soft)';
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!active) e.currentTarget.style.background = 'transparent';
+                    }}
+                    onClick={() => setLangOpen(false)}
+                  >
+                    <span>{LOCALE_LABELS[code]}</span>
+                    <span style={{ color: 'var(--tp-text-dim)', fontSize: 11 }}>{code}</span>
+                  </a>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -13,6 +13,8 @@ interface ToolbarProps {
   onAddFolder?: () => void;
   onOpenCutter?: () => void;
   onPublish?: () => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
 }
 
 type IconName =
@@ -22,7 +24,9 @@ type IconName =
   | 'image-plus'
   | 'folder-plus'
   | 'scissors'
-  | 'package';
+  | 'package'
+  | 'arrow-back'
+  | 'arrow-forward';
 
 function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
   const common = {
@@ -96,6 +100,21 @@ function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
           <path d="M12 13v9" />
         </svg>
       );
+    case 'arrow-back':
+      // Curved arrow going left — the standard "undo" glyph.
+      return (
+        <svg {...common}>
+          <path d="M9 14L4 9l5-5" />
+          <path d="M4 9h11a5 5 0 0 1 5 5v0a5 5 0 0 1-5 5H8" />
+        </svg>
+      );
+    case 'arrow-forward':
+      return (
+        <svg {...common}>
+          <path d="M15 14l5-5-5-5" />
+          <path d="M20 9H9a5 5 0 0 0-5 5v0a5 5 0 0 0 5 5h7" />
+        </svg>
+      );
   }
 }
 
@@ -160,10 +179,15 @@ export default function Toolbar({
   onAddFolder,
   onOpenCutter,
   onPublish,
+  onUndo,
+  onRedo,
 }: ToolbarProps) {
   const t = getTranslations(locale);
   const imageCount = useTpStore((s) => s.images.length);
   const hasImages = imageCount > 0;
+  // Subscribe directly so the buttons enable/disable when history changes.
+  const canUndo = useTpStore((s) => s.history.past.length > 0);
+  const canRedo = useTpStore((s) => s.history.future.length > 0);
 
   void _onSaveProjectAs;
 
@@ -203,6 +227,15 @@ export default function Toolbar({
     else notify('Publish: not yet wired in Phase 1');
   };
 
+  const handleUndo = () => {
+    if (onUndo) onUndo();
+    else useTpStore.getState().undo();
+  };
+  const handleRedo = () => {
+    if (onRedo) onRedo();
+    else useTpStore.getState().redo();
+  };
+
   return (
     <div
       className="h-10 flex items-center px-2 gap-1"
@@ -211,6 +244,21 @@ export default function Toolbar({
         borderBottom: '1px solid var(--tp-border)',
       }}
     >
+      <ToolButton
+        icon="arrow-back"
+        title={t.toolbar.tooltipUndo}
+        disabled={!canUndo}
+        onClick={handleUndo}
+      />
+      <ToolButton
+        icon="arrow-forward"
+        title={t.toolbar.tooltipRedo}
+        disabled={!canRedo}
+        onClick={handleRedo}
+      />
+
+      <Divider />
+
       <ToolButton icon="file-plus" title={t.toolbar.tooltipNew} onClick={handleNew} />
       <ToolButton icon="folder-open" title={t.toolbar.tooltipOpen} onClick={handleOpen} />
       <ToolButton

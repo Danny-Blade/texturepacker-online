@@ -45,7 +45,7 @@ function manualGroup(images: { id: string; name: string }[]): AnimationGroup {
 }
 
 export default function AnimationPanel({ locale }: AnimationPanelProps) {
-  const t = copy[locale];
+  const t = locale === 'zh' ? copy.zh : copy.en;
   const { images, selectedIds } = useTpStore(useShallow((state) => ({
     images: state.images,
     selectedIds: state.selectedIds,

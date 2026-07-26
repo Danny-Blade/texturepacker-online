@@ -18,6 +18,16 @@ import {
   normalizeNineSlice,
   type SpriteMetadata,
 } from './spriteMetadata';
+import {
+  canRedo,
+  canUndo,
+  initialHistoryState,
+  pushSnapshot,
+  redo as redoHistory,
+  undo as undoHistory,
+  type HistorySnapshot,
+  type HistoryState,
+} from './history';
 
 export type ThemeMode = 'dark' | 'light';
 
@@ -25,7 +35,7 @@ export type BackgroundMode = 'checker' | 'solid' | 'transparent';
 
 export type SortMode = 'manual' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc';
 
-export type ImageFileFormat = 'png' | 'png-8' | 'jpg' | 'webp';
+export type ImageFileFormat = 'png' | 'png-8' | 'jpg' | 'webp' | 'dds-dxt1';
 
 export type Png8DitherMode = 'none' | 'floyd-steinberg' | 'atkinson';
 
@@ -147,6 +157,9 @@ export interface TexturePackerState {
   // derived (cached)
   packResult: PackResult | null;
 
+  // undo/redo — only the "project" slice is tracked; view state is not.
+  history: HistoryState;
+
   // actions — sprites
   addImages: (items: ImageItem[]) => void;
   removeImages: (ids: string[]) => void;
@@ -207,6 +220,14 @@ export interface TexturePackerState {
   addSmartFolder: (folder: SmartFolder) => void;
   removeSmartFolder: (id: string) => void;
   updateSmartFolder: (id: string, patch: Partial<SmartFolder>) => void;
+
+  // undo/redo
+  undo: () => void;
+  redo: () => void;
+  canUndoNow: () => boolean;
+  canRedoNow: () => boolean;
+  /** Test helper: reset the store to defaults. */
+  __resetForTests: () => void;
 }
 
 const initialSettings: PackerOptions = {
@@ -330,6 +351,30 @@ function schedulePack(): void {
   }
 }
 
+/**
+ * Extract the undoable slice of the store into a {@link HistorySnapshot}.
+ * `label` describes the *upcoming* edit; the snapshot itself captures the
+ * state *before* that edit is applied, so this label bubbles up in the UI as
+ * the description of what will be undone.
+ */
+function snapshotOf(
+  state: TexturePackerState,
+  label: string,
+  coalesceKey?: string,
+): HistorySnapshot {
+  return {
+    images: state.images,
+    settings: state.settings,
+    publishOptions: state.publishOptions,
+    exportFormat: state.exportFormat,
+    fileName: state.fileName,
+    activeSheet: state.activeSheet,
+    label,
+    timestamp: Date.now(),
+    coalesceKey,
+  };
+}
+
 export const useTpStore = create<TexturePackerState>((set, get) => ({
   images: [],
   selectedIds: [],
@@ -374,8 +419,17 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
 
   packResult: null,
 
+  history: initialHistoryState,
+
   addImages: (items) => {
-    set((s) => ({ images: [...s.images, ...items] }));
+    set((s) => {
+      const label = `Add ${items.length} sprite${items.length === 1 ? '' : 's'}`;
+      const snap = snapshotOf(s, label);
+      return {
+        history: pushSnapshot(s.history, snap),
+        images: [...s.images, ...items],
+      };
+    });
     schedulePack();
   },
 
@@ -384,7 +438,9 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
       const idSet = new Set(ids);
       const images = s.images.filter((i) => !idSet.has(i.id));
       const selectedIds = s.selectedIds.filter((id) => !idSet.has(id));
-      return { images, selectedIds };
+      const label = `Remove ${ids.length} sprite${ids.length === 1 ? '' : 's'}`;
+      const snap = snapshotOf(s, label);
+      return { history: pushSnapshot(s.history, snap), images, selectedIds };
     });
     schedulePack();
   },
@@ -394,13 +450,17 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
       currentJob.cancel();
       currentJob = null;
     }
-    set({
-      images: [],
-      selectedIds: [],
-      packResult: null,
-      isPacking: false,
-      packProgress: 0,
-      packError: null,
+    set((s) => {
+      const snap = snapshotOf(s, 'Clear all sprites');
+      return {
+        history: pushSnapshot(s.history, snap),
+        images: [],
+        selectedIds: [],
+        packResult: null,
+        isPacking: false,
+        packProgress: 0,
+        packError: null,
+      };
     });
   },
 
@@ -427,7 +487,8 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
         if (idx >= 0) insertAt = idx;
       }
       const images = [...rest.slice(0, insertAt), ...moving, ...rest.slice(insertAt)];
-      return { images };
+      const snap = snapshotOf(s, 'Reorder sprites');
+      return { history: pushSnapshot(s.history, snap), images };
     });
     schedulePack();
   },
@@ -456,7 +517,8 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
       }
       const images = [...rest.slice(0, insertAt), ...reparented, ...rest.slice(insertAt)];
       changed = true;
-      return { images };
+      const snap = snapshotOf(s, 'Reorder sprites');
+      return { history: pushSnapshot(s.history, snap), images };
     });
     if (changed) schedulePack();
   },
@@ -465,8 +527,11 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
     set((s) => {
       const trimmed = newName.trim();
       if (!trimmed) return {};
+      const oldImage = s.images.find((img) => img.id === id);
+      const label = oldImage ? `Rename ${oldImage.name}` : 'Rename sprite';
       const images = s.images.map((img) => (img.id === id ? { ...img, name: trimmed } : img));
-      return { images, renamingId: null };
+      const snap = snapshotOf(s, label);
+      return { history: pushSnapshot(s.history, snap), images, renamingId: null };
     }),
 
   updateSpriteMetadata: (ids, patch) => {
@@ -515,7 +580,15 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
             ? 'pot'
             : 'any');
       const powerOfTwo = sizeConstraint === 'pot';
+      // Identify the first patched key for the label and coalescing. Sliders
+      // typically send a single key (padding, extrude, ...); we use that as
+      // the coalesce key so successive drags collapse into one undo step.
+      const firstKey = Object.keys(patch)[0] ?? '';
+      const label = firstKey ? `Change ${firstKey}` : 'Change settings';
+      const isSingleKey = Object.keys(patch).length === 1;
+      const snap = snapshotOf(s, label, isSingleKey ? `settings:${firstKey}` : undefined);
       return {
+        history: pushSnapshot(s.history, snap),
         settings: {
           ...currentSettings,
           ...currentPatch,
@@ -529,18 +602,40 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
     schedulePack();
   },
 
-  setExportFormat: (fmt) => set({ exportFormat: fmt }),
-  setFileName: (name) => set({ fileName: name }),
+  setExportFormat: (fmt) =>
+    set((s) => ({
+      history: pushSnapshot(s.history, snapshotOf(s, `Set format to ${fmt}`)),
+      exportFormat: fmt,
+    })),
+  setFileName: (name) =>
+    set((s) => ({
+      history: pushSnapshot(s.history, snapshotOf(s, `Rename to ${name}`, 'fileName')),
+      fileName: name,
+    })),
   setSelectedDirPath: (p) => set({ selectedDirPath: p }),
   setDirHandle: (h) => set({ dirHandle: h }),
   setPublishOptions: (patch) =>
-    set((s) => ({ publishOptions: { ...s.publishOptions, ...patch } })),
+    set((s) => {
+      const firstKey = Object.keys(patch)[0] ?? '';
+      const isSingleKey = Object.keys(patch).length === 1;
+      return {
+        history: pushSnapshot(
+          s.history,
+          snapshotOf(s, 'Change publish options', isSingleKey ? `publish:${firstKey}` : undefined),
+        ),
+        publishOptions: { ...s.publishOptions, ...patch },
+      };
+    }),
   setPublishMode: (mode) => set({ publishMode: mode }),
   setActiveSheet: (idx) =>
     set((s) => {
       const total = s.packResult?.sheets.length ?? 0;
-      if (total === 0) return { activeSheet: 0 };
-      return { activeSheet: Math.max(0, Math.min(idx, total - 1)) };
+      const clamped = total === 0 ? 0 : Math.max(0, Math.min(idx, total - 1));
+      if (clamped === s.activeSheet) return {};
+      return {
+        history: pushSnapshot(s.history, snapshotOf(s, `Switch to sheet ${clamped + 1}`)),
+        activeSheet: clamped,
+      };
     }),
 
   setZoom: (z) => set({ zoom: Math.max(0.1, Math.min(8, z)) }),
@@ -614,6 +709,89 @@ export const useTpStore = create<TexturePackerState>((set, get) => ({
     set((s) => ({
       smartFolders: s.smartFolders.map((f) => (f.id === id ? { ...f, ...patch } : f)),
     })),
+
+  undo: () => {
+    const state = get();
+    // The snapshot we archive represents the CURRENT state, so redo can
+    // restore it. Its label describes what the redo will bring back.
+    const current = snapshotOf(state, 'Redo');
+    const { history: nextHistory, snap } = undoHistory(state.history, current);
+    if (!snap) return;
+    set({
+      history: nextHistory,
+      images: snap.images,
+      settings: snap.settings,
+      publishOptions: snap.publishOptions,
+      exportFormat: snap.exportFormat,
+      fileName: snap.fileName,
+      activeSheet: snap.activeSheet,
+    });
+    schedulePack();
+  },
+
+  redo: () => {
+    const state = get();
+    const current = snapshotOf(state, 'Undo');
+    const { history: nextHistory, snap } = redoHistory(state.history, current);
+    if (!snap) return;
+    set({
+      history: nextHistory,
+      images: snap.images,
+      settings: snap.settings,
+      publishOptions: snap.publishOptions,
+      exportFormat: snap.exportFormat,
+      fileName: snap.fileName,
+      activeSheet: snap.activeSheet,
+    });
+    schedulePack();
+  },
+
+  canUndoNow: () => canUndo(get().history),
+  canRedoNow: () => canRedo(get().history),
+
+  __resetForTests: () => {
+    if (currentJob) {
+      currentJob.cancel();
+      currentJob = null;
+    }
+    set({
+      images: [],
+      selectedIds: [],
+      settings: initialSettings,
+      exportFormat: 'json',
+      fileName: 'spritesheet',
+      selectedDirPath: '',
+      dirHandle: null,
+      publishOptions: initialPublishOptions,
+      publishMode: 'atlas',
+      activeSheet: 0,
+      zoom: 1,
+      pan: { x: 0, y: 0 },
+      showBorders: true,
+      showSpriteNames: false,
+      bgMode: 'checker',
+      bgColor: '#1e293b',
+      inspectorSections: {
+        output: true,
+        data: true,
+        layout: true,
+        effects: false,
+        sprites: true,
+      },
+      leftPanelWidth: 280,
+      rightPanelWidth: 320,
+      notification: null,
+      sortMode: 'manual',
+      collapsedFolders: [],
+      renamingId: null,
+      isPacking: false,
+      packProgress: 0,
+      packError: null,
+      smartFolders: [],
+      packResult: null,
+      history: initialHistoryState,
+    });
+  },
 }));
 
 export function selectEfficiency(s: TexturePackerState): number {

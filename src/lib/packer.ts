@@ -975,7 +975,13 @@ export type ExportFormat =
   | 'solar2d'
   | 'swift'
   | 'csharp'
-  | 'cpp';
+  | 'cpp'
+  | 'cocos2d-js'
+  | 'construct3'
+  | 'melonjs'
+  | 'impactjs'
+  | 'kwavan'
+  | 'custom';
 
 // Format dispatch lives in lib/formats. Re-export it here for legacy import paths.
 export { generateExportData } from './formats';
