@@ -75,8 +75,11 @@ describe('format generator compatibility fixtures', () => {
     // too but do not participate in the golden fixture set, so we check the
     // golden formats appear in ALL_EXPORT_FORMATS in the expected order rather
     // than demanding array equality.
-    const codeFileFormats: ExportFormat[] = ['swift', 'csharp', 'cpp'];
-    expect(ALL_EXPORT_FORMATS.filter((f) => !codeFileFormats.includes(f))).toEqual(
+    const nonGoldenFormats: ExportFormat[] = [
+      'swift', 'csharp', 'cpp',                                  // code-file generators
+      'cocos2d-js', 'construct3', 'melonjs', 'impactjs', 'kwavan', // P3-07 long-tail
+    ];
+    expect(ALL_EXPORT_FORMATS.filter((f) => !nonGoldenFormats.includes(f))).toEqual(
       goldenCases.map(({ format }) => format),
     );
     expect(goldenCases).toHaveLength(18);

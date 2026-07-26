@@ -1,7 +1,7 @@
 'use client';
 
 import type { ImageItem } from '@/lib/packer';
-import { getTranslations } from '@/lib/i18n';
+import { getTranslations, type Locale } from '@/lib/i18n';
 import { useTpStore } from '@/lib/store';
 import {
   DEFAULT_PIVOT,
@@ -16,7 +16,7 @@ import {
 } from '@/lib/spriteMetadata';
 
 interface Props {
-  locale: 'en' | 'zh';
+  locale: Locale;
   sprites: ImageItem[];
 }
 

@@ -17,6 +17,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
     "docker:build": "docker build -t wtp:local .",
     "docker:run": "docker run --rm -p 3000:3000 wtp:local"
   },

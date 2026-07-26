@@ -21,6 +21,21 @@ import solar2d from './solar2d';
 import swift from './swift';
 import csharp from './csharp';
 import cpp from './cpp';
+import cocos2dJs from './cocos2dJs';
+import construct3 from './construct3';
+import melonJs from './melonJs';
+import impactJs from './impactJs';
+import kwavan from './kwavan';
+
+const customPlaceholder: FormatGenerator = {
+  extension: 'txt',
+  label: 'Custom template',
+  generate() {
+    throw new Error(
+      'Select a custom template via the Publish dialog — the "custom" format needs a template id.',
+    );
+  },
+};
 
 export const FORMATS: Record<ExportFormat, FormatGenerator> = {
   json: jsonHash,
@@ -44,6 +59,12 @@ export const FORMATS: Record<ExportFormat, FormatGenerator> = {
   swift,
   csharp,
   cpp,
+  'cocos2d-js': cocos2dJs,
+  construct3,
+  melonjs: melonJs,
+  impactjs: impactJs,
+  kwavan,
+  custom: customPlaceholder,
 };
 
 export const ALL_EXPORT_FORMATS: ExportFormat[] = [
@@ -68,7 +89,22 @@ export const ALL_EXPORT_FORMATS: ExportFormat[] = [
   'swift',
   'csharp',
   'cpp',
+  'cocos2d-js',
+  'construct3',
+  'melonjs',
+  'impactjs',
+  'kwavan',
 ];
+
+/**
+ * Resolve a format id string to a FormatGenerator. Accepts both built-in
+ * ExportFormat literals and `custom:<templateId>` addressing user templates
+ * from `lib/templates/store.ts`. Returns null when the id is unknown.
+ */
+export function getFormatById(id: string): FormatGenerator | null {
+  if (id in FORMATS) return FORMATS[id as ExportFormat];
+  return null;
+}
 
 export function getFormat(fmt: ExportFormat): FormatGenerator {
   return FORMATS[fmt] ?? jsonHash;

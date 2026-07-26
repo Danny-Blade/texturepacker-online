@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo, useState } from 'react';
 import SpriteMetadataEditor from './SpriteMetadataEditor';
-import { getTranslations } from '@/lib/i18n';
+import { getTranslations, type Locale } from '@/lib/i18n';
 import { useTpStore, type BackgroundMode, type InspectorSectionState } from '@/lib/store';
 import { summarizeSelection } from '@/lib/spriteTree';
 import type {
@@ -15,7 +15,7 @@ import type {
 } from '@/lib/packer';
 
 interface InspectorProps {
-  locale: 'en' | 'zh';
+  locale: Locale;
 }
 
 import { FORMATS, ALL_EXPORT_FORMATS } from '@/lib/formats';

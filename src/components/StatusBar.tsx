@@ -1,10 +1,10 @@
 'use client';
 
-import { getTranslations } from '@/lib/i18n';
+import { getTranslations, type Locale } from '@/lib/i18n';
 import { selectEfficiency, selectExceedsMax, useTpStore } from '@/lib/store';
 
 interface StatusBarProps {
-  locale: 'en' | 'zh';
+  locale: Locale;
 }
 
 interface PillInfo {

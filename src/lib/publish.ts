@@ -121,7 +121,7 @@ function sheetsForVariant(
   }, prepareSpriteForAtlas).sheets;
 }
 
-export type ImageFileFormatLite = 'png' | 'png-8' | 'jpg' | 'webp';
+export type ImageFileFormatLite = 'png' | 'png-8' | 'jpg' | 'webp' | 'dds-dxt1';
 
 export function imageMimeFor(format: ImageFileFormatLite): string {
   if (format === 'jpg') return 'image/jpeg';
